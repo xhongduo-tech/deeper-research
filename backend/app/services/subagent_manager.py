@@ -179,17 +179,17 @@ class SubagentManager:
                 sub.status = "done"
                 sub.result = result
                 sub.finished_at = time.time()
-                # Capture escalation metadata from RunResult if present
-                if hasattr(result, "escalated") and result.escalated:
-                    sub.escalated = result.escalated
-                    sub.escalation_reason = result.escalation_reason or ""
-                    sub.original_employee_id = result.original_employee_id or ""
-                    # Update employee_id to reflect the actual expert that ran
-                    if result.original_employee_id:
-                        sub.original_employee_id = result.original_employee_id
+                # Escalation / resolved actor (RunResult from synthesis)
+                if hasattr(result, "resolved_employee_id") and result.resolved_employee_id:
+                    sub.employee_id = result.resolved_employee_id
+                if getattr(result, "escalated", False):
+                    sub.escalated = True
+                    sub.escalation_reason = getattr(result, "escalation_reason", "") or ""
+                    sub.original_employee_id = getattr(result, "original_employee_id", "") or ""
                     logger.info(
-                        "SubagentTask %s was escalated to expert (reason=%s)",
+                        "SubagentTask %s escalated (reason=%s, %s -> %s)",
                         task_id, sub.escalation_reason,
+                        sub.original_employee_id, sub.employee_id,
                     )
             return result
         except asyncio.CancelledError:

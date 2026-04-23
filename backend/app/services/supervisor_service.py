@@ -713,6 +713,7 @@ class SupervisorService:
                     evidence_summary=evidence_summary,
                     data_context_so_far=dict(state.data_context),  # 快照隔离
                     data_frames=data_frames,
+                    brief=context.brief,
                 )
                 tid = manager.launch(
                     coro=coro,
@@ -739,6 +740,32 @@ class SupervisorService:
                     continue
 
                 code, sandbox_result, metrics, error = sub_task.result
+                # 首轮无指标或沙箱失败时，以 error_count=1 触发专家级 Quinn+ 重试一次
+                if (not metrics or error) and sub_task.result is not None:
+                    code2, sr2, met2, err2 = await EmployeeRunner.run_data_step(
+                        step_description=step.description,
+                        evidence_summary=evidence_summary,
+                        data_context_so_far=dict(state.data_context),
+                        data_frames=data_frames,
+                        brief=context.brief,
+                        error_count=1,
+                        prior_error=error or "no metrics from first attempt",
+                    )
+                    if met2:
+                        code, sandbox_result, metrics, error = code2, sr2, met2, err2
+                        async with AsyncSessionLocal() as db:
+                            r = await ReportService.get(db, report_id)
+                            if r:
+                                await MessageService.append(
+                                    db, report_id=report_id,
+                                    role="employee_note",
+                                    author_id="data_wrangler",
+                                    author_name="Quinn+",
+                                    content="首轮数据步骤未产出有效指标，已自动升级为 **专家模式** 重试并成功。",
+                                    meta={"step_id": step.step_id, "expert_retry": True},
+                                )
+                                await db.commit()
+
                 emp = get_employee(step.employee_id) or get_employee("data_wrangler") or SUPERVISOR
                 emp_name = emp["first_name_en"]
 
@@ -901,6 +928,8 @@ class SupervisorService:
                 context=section_context,
                 data_context_summary=data_summary,
                 steering_instruction=steering or "",
+                qa_retry_count=0,
+                error_count=0,
             )
             tid = manager.launch(
                 coro=coro,
@@ -1095,6 +1124,7 @@ class SupervisorService:
                         context=retry_context,
                         data_context_summary=state.all_metrics_summary(),
                         qa_retry_patch=verdict.retry_prompt_patch,
+                        qa_retry_count=attempt + 1,
                     )
                     if retry_result.text:
                         entry["text"] = retry_result.text

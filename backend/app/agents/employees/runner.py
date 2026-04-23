@@ -206,6 +206,7 @@ class RunResult:
     escalated: bool = False
     escalation_reason: str = ""
     original_employee_id: str = ""
+    resolved_employee_id: str = ""  # 实际执行者（升级后为 expert_*）
 
 
 class EmployeeRunner:
@@ -484,6 +485,10 @@ class EmployeeRunner:
         expert_briefing = escalation.as_briefing_block()
         agent_label = "Quinn+（Expert Data Wrangler）" if escalation.should_escalate else "Quinn（Data Wrangler）"
 
+        _eid = escalation.expert_employee_id if escalation.should_escalate else "data_wrangler"
+        _emp = get_employee(_eid) or get_employee("data_wrangler") or {}
+        _llm_model = _emp.get("default_model")
+
         sys_prompt = (
             f"你是数据整理员 {agent_label}。\n"
             "根据用户给出的数据需求和已加载的 DataFrames，编写 Pandas 处理代码。\n\n"
@@ -516,6 +521,7 @@ class EmployeeRunner:
                         {"role": "user", "content": user_msg},
                     ],
                     stream=False, temperature=0.2, max_tokens=800,
+                    model=_llm_model,
                 ),
                 timeout=timeout_llm,
             )
@@ -577,6 +583,11 @@ class EmployeeRunner:
         # ── Expert Escalation Check ──────────────────────────────────────
         from app.services.escalation_service import EscalationService
 
+        steer = steering_instruction or ""
+        manual_escalate = manual_escalate or (
+            "[EXPERT_ESCALATE]" in steer or "[expert_escalate]" in steer.lower()
+        )
+
         escalation = EscalationService.decide(
             employee_id=employee_id,
             task_instruction=task.instruction or task.section_title,
@@ -593,7 +604,6 @@ class EmployeeRunner:
         original_employee_id = employee_id
         if escalation.should_escalate:
             employee_id = escalation.expert_employee_id
-            # Expert gets more compute budget
             max_tokens = max_tokens * 2
             timeout = timeout * 1.5
             logger.info(
@@ -653,11 +663,14 @@ class EmployeeRunner:
             },
         ]
 
+        _llm_model = employee.get("default_model")
+
         try:
             raw = await asyncio.wait_for(
                 cls._llm_service().chat(
                     messages=messages, stream=False,
                     temperature=temperature, max_tokens=max_tokens,
+                    model=_llm_model,
                 ),
                 timeout=timeout,
             )
@@ -667,12 +680,14 @@ class EmployeeRunner:
             fallback.escalated = escalation.should_escalate
             fallback.escalation_reason = escalation.reason.value
             fallback.original_employee_id = original_employee_id
+            fallback.resolved_employee_id = employee_id
             return fallback
 
         result = cls._parse(raw, employee, task, context)
         result.escalated = escalation.should_escalate
         result.escalation_reason = escalation.reason.value
         result.original_employee_id = original_employee_id
+        result.resolved_employee_id = employee_id
         return result
 
 

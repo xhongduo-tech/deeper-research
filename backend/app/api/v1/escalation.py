@@ -15,16 +15,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.deps import get_current_user, get_db
-from app.services.escalation_service import (
-    EscalationService,
-    EscalationReason,
-    score_complexity,
-)
+from app.api.v1.deps import AuthContext, get_auth_context
+from app.database import get_db
+from app.services.escalation_service import score_complexity
 from app.services.subagent_manager import SubagentManager
 from app.services.supervisor_service import _get_active_state
 
@@ -94,11 +91,11 @@ async def manual_escalate_section(
     section_id: str,
     body: ManualEscalateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
 ) -> Dict[str, Any]:
     # Verify report exists and is accessible
     from app.services.report_service import ReportService
-    report = await ReportService.get_report(db, report_id, current_user.id)
+    report = await ReportService.get(db, report_id, user_id=ctx.user.id)
     if not report:
         raise HTTPException(status_code=404, detail="报告不存在")
 
@@ -155,10 +152,10 @@ async def manual_escalate_section(
 async def get_report_escalations(
     report_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
 ) -> ReportEscalationSummary:
     from app.services.report_service import ReportService
-    report = await ReportService.get_report(db, report_id, current_user.id)
+    report = await ReportService.get(db, report_id, user_id=ctx.user.id)
     if not report:
         raise HTTPException(status_code=404, detail="报告不存在")
 
@@ -198,7 +195,7 @@ async def get_report_escalations(
 )
 async def preview_complexity(
     body: ComplexityPreviewRequest,
-    current_user=Depends(get_current_user),
+    _ctx: AuthContext = Depends(get_auth_context),
 ) -> ComplexityPreviewResponse:
     from app.services.escalation_service import COMPLEXITY_THRESHOLD
 
