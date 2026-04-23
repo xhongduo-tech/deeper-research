@@ -37,13 +37,18 @@ class SubagentTask:
     phase: str                   # "data" | "synthesis" | "qa" | "planning"
     section_id: Optional[str] = None
 
-    status: str = "pending"      # pending | running | done | cancelled | failed | steered
+    status: str = "pending"      # pending | running | done | cancelled | failed | steered | escalated
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
 
     result: Any = None
     error: Optional[str] = None
+
+    # Expert Escalation tracking
+    escalated: bool = False
+    escalation_reason: str = ""          # EscalationReason value
+    original_employee_id: str = ""       # employee before escalation
 
     # mid-flight steering: supervisor 可以向正在运行的任务推送指令
     steering_queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=16))
@@ -69,6 +74,10 @@ class SubagentTask:
             "elapsed_ms": self.elapsed_ms(),
             "error": self.error,
             "has_result": self.result is not None,
+            # Escalation info
+            "escalated": self.escalated,
+            "escalation_reason": self.escalation_reason,
+            "original_employee_id": self.original_employee_id,
         }
 
 
@@ -170,6 +179,18 @@ class SubagentManager:
                 sub.status = "done"
                 sub.result = result
                 sub.finished_at = time.time()
+                # Capture escalation metadata from RunResult if present
+                if hasattr(result, "escalated") and result.escalated:
+                    sub.escalated = result.escalated
+                    sub.escalation_reason = result.escalation_reason or ""
+                    sub.original_employee_id = result.original_employee_id or ""
+                    # Update employee_id to reflect the actual expert that ran
+                    if result.original_employee_id:
+                        sub.original_employee_id = result.original_employee_id
+                    logger.info(
+                        "SubagentTask %s was escalated to expert (reason=%s)",
+                        task_id, sub.escalation_reason,
+                    )
             return result
         except asyncio.CancelledError:
             if sub:

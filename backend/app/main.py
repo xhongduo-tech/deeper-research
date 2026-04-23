@@ -149,6 +149,7 @@ from app.api.v1 import (
     auth,
     custom_report_types,
     developer,
+    escalation,
     files,
     reports,
     subagents,
@@ -165,6 +166,7 @@ app.include_router(workforce.router, prefix="/api/v1")
 app.include_router(developer.router, prefix="/api/v1")
 app.include_router(developer.admin_router, prefix="/api/v1")
 app.include_router(subagents.router, prefix="/api/v1")
+app.include_router(escalation.router, prefix="/api/v1")
 
 # Static file serving for uploaded files
 if os.path.exists(settings.UPLOAD_DIR):

@@ -1,15 +1,19 @@
 """
 EmployeeRunner — single dispatch point for running one employee on one task.
 
-This is the minimum unit of "doing work" in Phase 2. Given:
-  - an employee (role card from the registry)
-  - a task spec (what section to write, what kind of output)
-  - the report context (brief, clarifications, attached document digests)
+v3 新增：自动专家升级（Expert Escalation）
+  当任务满足以下任一条件时，EmployeeRunner 自动将其升级为对应专家处理：
+    1. 手动触发（manual_escalate=True）
+    2. QA 阻断（qa_retry_count >= EscalationService.QA_RETRY_ESCALATE_AT）
+    3. 任务复杂度评分 >= COMPLEXITY_THRESHOLD
+    4. 执行错误（prior_error 非空且 error_count >= ERROR_ESCALATE_AT）
 
-…it builds a role-conditioned prompt, asks the LLM, and returns a normalized
-result. If the LLM is unreachable, it returns a clearly-marked placeholder so
-the pipeline still completes end-to-end (important for offline/intranet demos
-before an LLM is wired in).
+专家与普通员工使用同一个 run_synthesis / run_data_step 接口，
+区别在于：
+  - employee_id 被替换为 expert_* 版本
+  - system_prompt 附加多步推理框架（Think-Plan-Execute-Verify）
+  - max_tokens 自动翻倍，timeout 延长 1.5x
+  - escalation_briefing 块注入，说明专家接管背景
 
 The runner is deliberately stateless and swappable: scoping, production, and
 review all reuse this same function. The real per-employee "skills" live in
@@ -198,6 +202,10 @@ class RunResult:
     note: str
     raw: Optional[str] = None
     error: Optional[str] = None
+    # Escalation metadata (populated when expert took over)
+    escalated: bool = False
+    escalation_reason: str = ""
+    original_employee_id: str = ""
 
 
 class EmployeeRunner:
@@ -438,6 +446,11 @@ class EmployeeRunner:
         data_frames: dict,          # pre-loaded DataFrames for sandbox
         timeout_llm: float = 60.0,
         timeout_sandbox: float = 25.0,
+        # --- Expert Escalation ---
+        brief: str = "",
+        error_count: int = 0,
+        prior_error: Optional[str] = None,
+        manual_escalate: bool = False,
     ) -> tuple:
         """Phase 2 core loop for one data step.
 
@@ -449,9 +462,30 @@ class EmployeeRunner:
         Returns (code: str, sandbox_result, metrics: dict, error: str|None).
         """
         from app.services.sandbox_service import execute, extract_metrics_from_result, SandboxSecurityError
+        from app.services.escalation_service import EscalationService
+
+        # Expert escalation check for data steps
+        escalation = EscalationService.decide(
+            employee_id="data_wrangler",
+            task_instruction=step_description,
+            task_kind="table_with_narrative",
+            brief=brief or step_description,
+            evidence_count=0,
+            doc_count=len(data_frames),
+            error_count=error_count,
+            prior_error=prior_error,
+            manual_override=manual_escalate,
+        )
+        if escalation.should_escalate:
+            timeout_llm = timeout_llm * 1.5
+            timeout_sandbox = timeout_sandbox * 1.5
+            logger.info("Escalating data_step to expert: %s", escalation.context_note)
+
+        expert_briefing = escalation.as_briefing_block()
+        agent_label = "Quinn+（Expert Data Wrangler）" if escalation.should_escalate else "Quinn（Data Wrangler）"
 
         sys_prompt = (
-            "你是数据整理员 Quinn（Data Wrangler）。\n"
+            f"你是数据整理员 {agent_label}。\n"
             "根据用户给出的数据需求和已加载的 DataFrames，编写 Pandas 处理代码。\n\n"
             "## 规则\n"
             "1. 代码必须把关键指标赋给一个名为 `metrics` 的 Python dict，"
@@ -470,6 +504,7 @@ class EmployeeRunner:
             f"可用 DataFrame 变量：{available_dfs}\n\n"
             f"已有 data_context：\n{context_summary}\n\n"
             f"材料摘要（供参考，不能联网）：\n{evidence_summary[:800]}"
+            + (f"\n\n{expert_briefing}" if expert_briefing else "")
         )
 
         code = ""
@@ -518,6 +553,11 @@ class EmployeeRunner:
         temperature: float = 0.5,
         max_tokens: int = 2800,
         timeout: float = 120.0,
+        # --- Expert Escalation ---
+        qa_retry_count: int = 0,
+        error_count: int = 0,
+        prior_error: Optional[str] = None,
+        manual_escalate: bool = False,
     ) -> "RunResult":
         """Phase 3: synthesis with full data_context injected into prompt.
 
@@ -527,7 +567,41 @@ class EmployeeRunner:
         修正执行路线，而不必等待任务完成后再重新派遣。
 
         qa_retry_patch: QA 反幻觉重试时注入的冲突修正说明。
+
+        Expert Escalation 参数：
+          qa_retry_count  — 当前任务的 QA 失败次数（>= 2 时强制升级）
+          error_count     — 当前任务的执行失败次数（>= 1 时升级）
+          prior_error     — 上次失败的错误信息（注入专家接管说明）
+          manual_escalate — True 时强制专家接管，无视其他条件
         """
+        # ── Expert Escalation Check ──────────────────────────────────────
+        from app.services.escalation_service import EscalationService
+
+        escalation = EscalationService.decide(
+            employee_id=employee_id,
+            task_instruction=task.instruction or task.section_title,
+            task_kind=task.section_kind,
+            brief=context.brief,
+            evidence_count=len(context.evidence_snippets),
+            doc_count=len(context.document_digests),
+            qa_retry_count=qa_retry_count,
+            error_count=error_count,
+            prior_error=prior_error,
+            manual_override=manual_escalate,
+        )
+
+        original_employee_id = employee_id
+        if escalation.should_escalate:
+            employee_id = escalation.expert_employee_id
+            # Expert gets more compute budget
+            max_tokens = max_tokens * 2
+            timeout = timeout * 1.5
+            logger.info(
+                "Escalating synthesis %s/%s: %s",
+                original_employee_id, task.section_id,
+                EscalationService.format_escalation_log(escalation, original_employee_id),
+            )
+
         employee = get_employee(employee_id)
         if not employee:
             return RunResult(ok=False, text="", note="", error=f"unknown employee {employee_id}")
@@ -543,20 +617,34 @@ class EmployeeRunner:
             if qa_retry_patch
             else ""
         )
-        # mid-flight steering：Supervisor 在任务运行期间下发的修正指令
+        # mid-flight steering
         steering_block = (
             "\n\n## 🎯 主管实时指令（优先级最高，必须体现在本章节中）\n" + steering_instruction
             if steering_instruction.strip()
             else ""
         )
+        # Expert escalation briefing — tell the expert agent why it was called
+        expert_block = (
+            "\n\n" + escalation.as_briefing_block()
+            if escalation.should_escalate and escalation.as_briefing_block()
+            else ""
+        )
+
+        # Expert agents use their own system_prompt (already encoded in registry)
+        sys_prompt = (
+            employee.get("system_prompt", "")
+            if escalation.should_escalate
+            else _role_system_prompt(employee)
+        )
 
         messages = [
-            {"role": "system", "content": _role_system_prompt(employee)},
+            {"role": "system", "content": sys_prompt},
             {
                 "role": "user",
                 "content": (
                     context.as_context_block()
                     + data_block
+                    + expert_block
                     + steering_block
                     + retry_block
                     + "\n\n---\n\n"
@@ -575,9 +663,17 @@ class EmployeeRunner:
             )
         except Exception as exc:
             logger.warning("Synthesis LLM failed for %s/%s: %s", employee_id, task.section_id, exc)
-            return cls._fallback(employee, task, context, str(exc))
+            fallback = cls._fallback(employee, task, context, str(exc))
+            fallback.escalated = escalation.should_escalate
+            fallback.escalation_reason = escalation.reason.value
+            fallback.original_employee_id = original_employee_id
+            return fallback
 
-        return cls._parse(raw, employee, task, context)
+        result = cls._parse(raw, employee, task, context)
+        result.escalated = escalation.should_escalate
+        result.escalation_reason = escalation.reason.value
+        result.original_employee_id = original_employee_id
+        return result
 
 
 # ---------------------------------------------------------------------------
