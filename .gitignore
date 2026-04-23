@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+.env
+*.egg
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads & outputs (runtime data)
+backend/uploads/
+backend/data/
+backend/sandbox_workspace/
+backend/templates/
+
+# Logs
+*.log
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.env
+.npm
+
+# Docker
+*.tar.gz
+
+# Secrets
+.env.local
+*.key
+*.pem
+*.cert
+
+# Claude
+.claude/
+
+# Example screenshots (keep for docs but skip large binaries)
+example/*.jpeg
+example/*.jpg
+example/*.png
+*.png
+*.svg

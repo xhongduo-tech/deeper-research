@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  backend:
+    build: .
+    container_name: multiagent-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./app.db
+      - REDIS_URL=redis://redis:6379
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - DEFAULT_LLM_BASE_URL=${DEFAULT_LLM_BASE_URL:-https://api.openai.com/v1}
+      - DEFAULT_LLM_MODEL=${DEFAULT_LLM_MODEL:-gpt-4o}
+      - DEFAULT_LLM_API_KEY=${DEFAULT_LLM_API_KEY:-}
+      - ENABLE_BROWSER=true
+      - ENABLE_EXTERNAL_SEARCH=false
+      - SANDBOX_TIMEOUT=30
+      - MAX_WORKERS=10
+    volumes:
+      - ./uploads:/app/uploads
+      - ./templates:/app/templates
+      - ./sandbox_workspace:/app/sandbox_workspace
+      - ./app.db:/app/app.db
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    container_name: multiagent-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  redis_data:

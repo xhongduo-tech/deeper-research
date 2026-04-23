@@ -1,0 +1,65 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./data/app.db
+      - REDIS_URL=redis://redis:6379
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
+      - UPLOAD_DIR=/app/uploads
+      - TEMPLATE_DIR=/app/templates
+      - SANDBOX_WORKSPACE=/app/sandbox_workspace
+      - DEFAULT_LLM_BASE_URL=${DEFAULT_LLM_BASE_URL:-http://localhost:11434/v1}
+      - DEFAULT_LLM_MODEL=${DEFAULT_LLM_MODEL:-qwen2.5:72b}
+      - DEFAULT_LLM_API_KEY=${DEFAULT_LLM_API_KEY:-ollama}
+      - ENABLE_EXTERNAL_SEARCH=false
+      - ENABLE_BROWSER=true
+    volumes:
+      - ./data/uploads:/app/uploads
+      - ./data/templates:/app/templates
+      - ./data/sandbox:/app/sandbox_workspace
+      - ./data/db:/app/data
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  redis_data:

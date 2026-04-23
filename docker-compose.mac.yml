@@ -1,0 +1,29 @@
+# ==============================================================================
+# Mac 本机测试 overlay
+# Apple Silicon (arm64) 原生构建，无 QEMU 仿真，构建速度快
+#
+# 用法:
+#   docker compose -f docker-compose.yml -f docker-compose.mac.yml up --build
+# ==============================================================================
+
+services:
+  backend:
+    platform: linux/arm64
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        # Mac 本机验证不需要浏览器控制，跳过可节省 ~1.5GB 内存 + ~3 分钟构建
+        INSTALL_BROWSER: "0"
+    environment:
+      # 运行时也关掉浏览器开关，免得有代码去调用 Playwright 报错
+      - ENABLE_BROWSER=false
+
+  frontend:
+    platform: linux/arm64
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+
+  redis:
+    platform: linux/arm64

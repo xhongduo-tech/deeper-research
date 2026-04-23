@@ -1,0 +1,683 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =========================================================
+   dataagent · Design System v3
+   见 /DESIGN.md §5
+   =========================================================
+   v3 变化（v2 作废）：
+   - canvas 从暖米底 → Vercel 风冷白
+   - ink / line 全部改为纯中性灰阶
+   - 新增 supervisor 金色（Chief 专属）
+   - 保留 brand 褐（深研褐）作为唯一强调色
+   ========================================================= */
+:root {
+  /* Core palette —— Vercel 风中性 */
+  --color-canvas:   #fafaf9;  /* 页面主底 */
+  --color-surface:  #ffffff;  /* 一级面板 */
+  --color-elevated: #ffffff;  /* 浮起面板（保持同白，靠阴影区分） */
+  --color-sunken:   #f5f4f0;  /* 次级面板（浅米，取自身份牌） */
+  --color-mist:     #ececea;  /* 再下一档 */
+
+  /* Ink —— 纯中性灰阶 */
+  --color-ink-1: #141414;
+  --color-ink-2: #4a4a46;
+  --color-ink-3: #8a877e;
+  --color-ink-4: #bcb8ac;
+  --color-ink-inverse: #ffffff;
+
+  /* Lines */
+  --color-line-subtle: #efeeea;
+  --color-line:        #e5e4e0;
+  --color-line-strong: #c8c5bd;
+
+  /* RGB component vars — used by Tailwind for alpha-value support */
+  --c-canvas:     250 250 249;
+  --c-surface:    255 255 255;
+  --c-elevated:   255 255 255;
+  --c-sunken:     245 244 240;
+  --c-mist:       236 236 234;
+  --c-ink-1:      20  20  20;
+  --c-ink-2:      74  74  70;
+  --c-ink-3:      138 135 126;
+  --c-ink-4:      188 184 172;
+  --c-ink-inv:    255 255 255;
+  --c-line-sub:   239 238 234;
+  --c-line:       229 228 224;
+  --c-line-str:   200 197 189;
+  --c-brand:      140  79  58;
+  --c-supervisor: 192 138  58;
+
+  /* ID-card specific vars (EmployeeCard) */
+  --id-card-bg: linear-gradient(155deg, #ededea 0%, #e9e6df 55%, #e1ddd3 100%);
+  --id-card-shadow: 0 0 0 1px rgba(255,255,255,0.6) inset,
+                    0 1px 0 rgba(255,255,255,0.8) inset,
+                    0 2px 4px rgba(0,0,0,0.04),
+                    0 18px 38px -20px rgba(60,50,40,0.25);
+  --id-card-name-bg:   #141414;
+  --id-card-name-text: #ffffff;
+  --id-card-text:      #141414;
+  --id-card-sub:       #6b6b6b;
+  --id-card-skill-bg:  #fafaf7;
+
+  /* Brand —— 深研褐（保留） */
+  --color-brand:         #8c4f3a;
+  --color-brand-hover:   #79412f;
+  --color-brand-pressed: #653424;
+  --color-brand-soft:    #f4e3d9;
+  --color-brand-ring:    rgba(140, 79, 58, 0.18);
+
+  /* Supervisor 金（Chief 专属，用于协作室气泡/身份牌） */
+  --color-supervisor:      #c08a3a;
+  --color-supervisor-soft: #f7ecd6;
+  --color-supervisor-ring: rgba(192, 138, 58, 0.22);
+
+  /* Cedar/Gold —— 保留作为 legacy 兜底（不再推荐新代码使用） */
+  --color-cedar:       #6b7a4f;
+  --color-cedar-hover: #5a6841;
+  --color-cedar-soft:  #e7ead9;
+  --color-gold:        #a27b36;
+  --color-gold-soft:   #f4e6c8;
+
+  /* Semantic —— 仅 4 色 */
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-danger:  #dc2626;
+  --color-info:    #0ea5e9;
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+
+  /* Elevation —— 冷中性阴影 */
+  --shadow-sm:   0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px -12px rgba(0, 0, 0, 0.10);
+  --shadow-pop:  0 4px 12px rgba(0, 0, 0, 0.06), 0 20px 40px -16px rgba(0, 0, 0, 0.16);
+
+  /* Focus */
+  --focus-ring: 0 0 0 3px rgba(140, 79, 58, 0.18);
+
+  /* Motion —— 见 DESIGN.md §5 动效规范 */
+  --ease-emphasize: cubic-bezier(0.2, 0, 0, 1);
+  --ease-soft:      cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-exit:      cubic-bezier(0.4, 0, 1, 1);
+  --duration-fast:  120ms;
+  --duration-base:  180ms;
+  --duration-slow:  260ms;
+  --duration-page:  400ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+    --duration-page: 0ms;
+  }
+}
+
+/* =========================================================
+   Dark mode baseline (opt-in via `.dark` on <html>)
+   ---------------------------------------------------------
+   This is a groundwork-level dark theme: it retunes the core
+   CSS variables so all tokens that read from them (ds-card,
+   focus ring, brand soft, etc.) switch cleanly. Tailwind
+   hard-coded color classes (bg-surface, text-ink-1, …) still
+   compile to their light hexes — a full dark pass will
+   migrate those in a later iteration.
+   ========================================================= */
+html.dark {
+  color-scheme: dark;
+
+  --color-canvas:   #0b0b0d;
+  --color-surface:  #111114;
+  --color-elevated: #16161a;
+  --color-sunken:   #1b1b20;
+  --color-mist:     #23232a;
+
+  --color-ink-1: #f5f4f0;
+  --color-ink-2: #c8c6c0;
+  --color-ink-3: #8e8c86;
+  --color-ink-4: #5d5c57;
+  --color-ink-inverse: #0b0b0d;
+
+  --color-line-subtle: #23232a;
+  --color-line:        #2c2c34;
+  --color-line-strong: #3a3a44;
+
+  --color-brand-soft: rgba(140, 79, 58, 0.16);
+  --color-brand-ring: rgba(204, 124, 94, 0.28);
+
+  --color-supervisor-soft: rgba(192, 138, 58, 0.16);
+  --color-supervisor-ring: rgba(216, 164, 88, 0.28);
+
+  --shadow-sm:   0 1px 2px rgba(0, 0, 0, 0.40);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.40), 0 8px 24px -12px rgba(0, 0, 0, 0.55);
+  --shadow-pop:  0 4px 12px rgba(0, 0, 0, 0.45), 0 20px 40px -16px rgba(0, 0, 0, 0.60);
+
+  --focus-ring: 0 0 0 3px rgba(204, 124, 94, 0.28);
+
+  /* RGB components (dark mode) */
+  --c-canvas:     11  11  13;
+  --c-surface:    17  17  20;
+  --c-elevated:   22  22  26;
+  --c-sunken:     27  27  32;
+  --c-mist:       35  35  42;
+  --c-ink-1:      245 244 240;
+  --c-ink-2:      200 198 192;
+  --c-ink-3:      142 140 134;
+  --c-ink-4:       93  92  87;
+  --c-ink-inv:    11  11  13;
+  --c-line-sub:   35  35  42;
+  --c-line:       44  44  52;
+  --c-line-str:   58  58  68;
+
+  /* ID-card (dark) */
+  --id-card-bg: linear-gradient(155deg, #1e1e24 0%, #1b1b21 55%, #17171c 100%);
+  --id-card-shadow: 0 0 0 1px rgba(255,255,255,0.07) inset,
+                    0 1px 0 rgba(255,255,255,0.04) inset,
+                    0 2px 4px rgba(0,0,0,0.35),
+                    0 18px 38px -20px rgba(0,0,0,0.55);
+  --id-card-name-bg:   #e8e6e0;
+  --id-card-name-text: #141414;
+  --id-card-text:      #f0ede8;
+  --id-card-sub:       #8e8c86;
+  --id-card-skill-bg:  #23232a;
+}
+
+html.dark body {
+  background-color: var(--color-canvas);
+  color: var(--color-ink-1);
+}
+
+/* =========================================================
+   Base reset & typography
+   ========================================================= */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    text-size-adjust: 100%;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-canvas);
+    color: var(--color-ink-1);
+    font-family:
+      'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+      'HarmonyOS Sans SC', 'Microsoft YaHei', 'Hiragino Sans GB',
+      'Noto Sans CJK SC', sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: 'ss01', 'cv11';
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--color-ink-1);
+  }
+
+  p {
+    margin: 0;
+  }
+
+  button {
+    font: inherit;
+    cursor: pointer;
+  }
+
+  /* Focus ring (accessibility) */
+  :focus {
+    outline: none;
+  }
+  :focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+    border-radius: var(--radius-sm);
+  }
+
+  /* Text selection */
+  ::selection {
+    background: rgba(140, 79, 58, 0.22);
+    color: var(--color-ink-1);
+  }
+
+  /* Native form controls */
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--color-ink-4);
+    opacity: 1;
+  }
+}
+
+/* =========================================================
+   Scrollbar — discreet, brand-tinted
+   ========================================================= */
+html {
+  scrollbar-color: var(--color-line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(140, 116, 88, 0.35);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(140, 116, 88, 0.55);
+}
+
+.custom-scrollbar {
+  scrollbar-width: thin;
+}
+.custom-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(140, 116, 88, 0.32);
+  border-radius: 999px;
+}
+
+.scrollbar-none { scrollbar-width: none; }
+.scrollbar-none::-webkit-scrollbar { display: none; }
+
+/* =========================================================
+   Keyframes
+   ========================================================= */
+@keyframes thinking {
+  0%, 100% { opacity: 0.35; transform: translateY(0); }
+  50%      { opacity: 1;    transform: translateY(-2px); }
+}
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulseRing {
+  0%   { box-shadow: 0 0 0 0 rgba(140, 79, 58, 0.28); }
+  70%  { box-shadow: 0 0 0 10px rgba(140, 79, 58, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(140, 79, 58, 0); }
+}
+@keyframes blink {
+  50% { opacity: 0; }
+}
+@keyframes agentFloat {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-2px); }
+}
+
+/* =========================================================
+   Component utilities — class-first atoms
+   ========================================================= */
+@layer components {
+  /* ------ Card --------------------------------------------- */
+  .ds-card {
+    background: var(--color-elevated);
+    border: 1px solid var(--color-line-subtle);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+  }
+  .ds-card-hover {
+    transition: box-shadow 0.2s var(--ease-soft), transform 0.2s var(--ease-soft),
+                border-color 0.2s var(--ease-soft);
+  }
+  .ds-card-hover:hover {
+    box-shadow: var(--shadow-card);
+    border-color: var(--color-line);
+  }
+  .ds-surface {
+    background: var(--color-surface);
+  }
+
+  /* ------ Input --------------------------------------------- */
+  .ds-input {
+    width: 100%;
+    display: block;
+    padding: 10px 14px;
+    background: var(--color-elevated);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    color: var(--color-ink-1);
+    font-size: 14px;
+    line-height: 22px;
+    transition: border-color 0.15s var(--ease-soft),
+                box-shadow 0.15s var(--ease-soft),
+                background-color 0.15s var(--ease-soft);
+  }
+  .ds-input:hover {
+    border-color: var(--color-line-strong);
+  }
+  .ds-input:focus,
+  .ds-input:focus-visible {
+    outline: none;
+    border-color: var(--color-brand);
+    box-shadow: var(--focus-ring);
+    background: #fff;
+  }
+  .ds-input::placeholder { color: var(--color-ink-4); }
+  .ds-input:disabled {
+    background: var(--color-sunken);
+    color: var(--color-ink-4);
+    cursor: not-allowed;
+  }
+
+  /* ------ Button -------------------------------------------- */
+  .ds-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border-radius: var(--radius-md);
+    font-weight: 500;
+    font-size: 13.5px;
+    line-height: 20px;
+    border: 1px solid transparent;
+    transition: background-color 0.15s var(--ease-soft),
+                border-color 0.15s var(--ease-soft),
+                box-shadow 0.15s var(--ease-soft),
+                color 0.15s var(--ease-soft);
+    white-space: nowrap;
+    user-select: none;
+  }
+  .ds-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+  .ds-btn-primary {
+    background: var(--color-brand);
+    color: var(--color-ink-inverse);
+    border-color: var(--color-brand);
+  }
+  .ds-btn-primary:hover:not(:disabled) {
+    background: var(--color-brand-hover);
+    border-color: var(--color-brand-hover);
+  }
+  .ds-btn-primary:active:not(:disabled) {
+    background: var(--color-brand-pressed);
+  }
+  /* v3：secondary = Vercel 风黑按钮（替代原 cedar 绿）
+     这样 Primary=深研褐 作为主 CTA，Secondary=黑 作为次级 CTA，
+     和 Vercel dashboard 的节奏一致 */
+  .ds-btn-secondary {
+    background: #141414;
+    color: #ffffff;
+    border-color: #141414;
+  }
+  .ds-btn-secondary:hover:not(:disabled) {
+    background: #2a2a2a;
+    border-color: #2a2a2a;
+  }
+  .ds-btn-secondary:active:not(:disabled) {
+    background: #000;
+  }
+  .ds-btn-outline {
+    background: transparent;
+    color: var(--color-ink-2);
+    border-color: var(--color-line);
+  }
+  .ds-btn-outline:hover:not(:disabled) {
+    background: var(--color-surface);
+    border-color: var(--color-line-strong);
+    color: var(--color-ink-1);
+  }
+  .ds-btn-ghost {
+    background: transparent;
+    color: var(--color-ink-2);
+  }
+  .ds-btn-ghost:hover:not(:disabled) {
+    background: var(--color-sunken);
+    color: var(--color-ink-1);
+  }
+  .ds-btn-danger {
+    background: transparent;
+    color: var(--color-danger);
+    border-color: rgba(220, 38, 38, 0.35);
+  }
+  .ds-btn-danger:hover:not(:disabled) {
+    background: rgba(220, 38, 38, 0.08);
+    border-color: var(--color-danger);
+  }
+
+  /* ------ Chip / Badge -------------------------------------- */
+  .ds-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    font-size: 12px;
+    line-height: 18px;
+    font-weight: 500;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    color: var(--color-ink-2);
+    background: var(--color-sunken);
+  }
+  .ds-chip-outline {
+    background: transparent;
+    border-color: var(--color-line);
+  }
+
+  /* ------ Section header ------------------------------------ */
+  .ds-eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--color-brand);
+  }
+
+  /* ------ Dividers ------------------------------------------ */
+  .ds-divider {
+    height: 1px;
+    background: var(--color-line-subtle);
+  }
+
+  /* ------ Link ---------------------------------------------- */
+  .ds-link {
+    color: var(--color-brand);
+    text-decoration: none;
+    transition: color 0.15s ease;
+  }
+  .ds-link:hover { color: var(--color-brand-hover); text-decoration: underline; }
+
+  /* ------ Kbd ---------------------------------------------- */
+  .ds-kbd {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 6px;
+    min-width: 18px;
+    height: 20px;
+    font-size: 11px;
+    font-family: var(--font-mono, monospace);
+    color: var(--color-ink-2);
+    background: var(--color-elevated);
+    border: 1px solid var(--color-line);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+  }
+}
+
+/* =========================================================
+   Gradient & effect utilities
+   ========================================================= */
+@layer utilities {
+  .text-gradient-brand {
+    background: linear-gradient(135deg, #8c4f3a 0%, #a27b36 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+  .text-gradient-cedar {
+    background: linear-gradient(135deg, #6b7a4f 0%, #8c4f3a 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+  .bg-paper {
+    background-color: var(--color-canvas);
+    background-image:
+      radial-gradient(at 20% 0%, rgba(140, 79, 58, 0.05) 0, transparent 55%),
+      radial-gradient(at 100% 0%, rgba(107, 122, 79, 0.06) 0, transparent 45%),
+      radial-gradient(at 100% 100%, rgba(162, 123, 54, 0.04) 0, transparent 50%);
+  }
+  .bg-grid-faint {
+    background-image: linear-gradient(rgba(120, 90, 60, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(120, 90, 60, 0.05) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+  .glass-card {
+    background: rgba(255, 251, 242, 0.78);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+  }
+  .text-balance { text-wrap: balance; }
+  .text-pretty  { text-wrap: pretty; }
+  .typewriter::after {
+    content: '|';
+    animation: blink 1s step-end infinite;
+    margin-left: 2px;
+  }
+}
+
+/* =========================================================
+   Agent avatar decorations (legacy compat)
+   ========================================================= */
+.agent-id-avatar { animation: agentFloat 4s ease-in-out infinite; }
+.agent-id-ring   { animation: pulseRing 2.2s ease-in-out infinite; }
+.agent-active    { animation: pulseRing 2.2s ease-in-out infinite; }
+
+/* =========================================================
+   Markdown content
+   ========================================================= */
+.markdown-content {
+  color: var(--color-ink-2);
+  font-size: 14.5px;
+  line-height: 1.78;
+}
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4 {
+  color: var(--color-ink-1);
+  font-weight: 600;
+  margin: 1.6em 0 0.6em;
+  letter-spacing: -0.01em;
+}
+.markdown-content h1 { font-size: 22px; line-height: 30px; }
+.markdown-content h2 { font-size: 18px; line-height: 28px; }
+.markdown-content h3 { font-size: 16px; line-height: 24px; }
+.markdown-content h4 { font-size: 14px; line-height: 22px; }
+
+.markdown-content p { margin: 0.6em 0; }
+.markdown-content strong { color: var(--color-ink-1); font-weight: 600; }
+.markdown-content a { color: var(--color-brand); text-decoration: underline; text-underline-offset: 3px; }
+
+.markdown-content ul,
+.markdown-content ol {
+  margin: 0.6em 0;
+  padding-left: 1.4em;
+}
+.markdown-content li { margin: 0.25em 0; }
+
+.markdown-content code {
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(140, 79, 58, 0.08);
+  color: var(--color-brand);
+}
+.markdown-content pre {
+  background: #2b231c;
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+  overflow-x: auto;
+  margin: 1em 0;
+  color: #f4ead8;
+  box-shadow: var(--shadow-sm);
+}
+.markdown-content pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+.markdown-content blockquote {
+  margin: 1em 0;
+  padding: 0.2em 1em;
+  border-left: 3px solid var(--color-brand);
+  background: var(--color-brand-soft);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--color-ink-2);
+}
+
+.markdown-content hr {
+  border: 0;
+  border-top: 1px solid var(--color-line-subtle);
+  margin: 2em 0;
+}
+
+.markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 13.5px;
+  border: 1px solid var(--color-line-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.markdown-content th {
+  background: var(--color-sunken);
+  color: var(--color-ink-1);
+  font-weight: 600;
+  padding: 9px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--color-line);
+}
+.markdown-content td {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--color-line-subtle);
+  color: var(--color-ink-2);
+}
+.markdown-content tr:last-child td { border-bottom: 0; }
+.markdown-content tr:nth-child(even) td { background: rgba(237, 226, 202, 0.35); }
+
+/* =========================================================
+   React Hot Toast
+   ========================================================= */
+.react-hot-toast { pointer-events: all; }

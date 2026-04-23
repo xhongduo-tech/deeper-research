@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f1e9d6" />
+    <meta name="description" content="深度研究数据分析智能体 (dataagent) · 企业多智能体研究与报告平台" />
+    <title>深度研究数据分析智能体 · dataagent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background-color: #f1e9d6;
+        color: #221c15;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+          'HarmonyOS Sans SC', 'Microsoft YaHei', sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      #root { min-height: 100vh; }
+
+      #initial-loader {
+        position: fixed;
+        top: 0; right: 0; bottom: 0; left: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #f1e9d6;
+        z-index: 9999;
+        -webkit-transition: opacity 0.35s ease;
+        transition: opacity 0.35s ease;
+      }
+      #initial-loader > * + * { margin-top: 20px; }
+      #initial-loader.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      .brand-seal {
+        width: 64px;
+        height: 64px;
+        display: block;
+        background: url('/logo.svg') center/contain no-repeat;
+      }
+      .brand-meta {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+      }
+      .brand-meta > * + * { margin-top: 4px; }
+      .brand-title {
+        font-size: 14px;
+        letter-spacing: 0.08em;
+        color: #4a3c2e;
+      }
+      .brand-sub {
+        font-size: 11px;
+        letter-spacing: 0.24em;
+        text-transform: uppercase;
+        color: #8c4f3a;
+      }
+      .loader-bar {
+        width: 180px;
+        height: 2px;
+        background: rgba(140, 79, 58, 0.12);
+        border-radius: 999px;
+        overflow: hidden;
+        position: relative;
+      }
+      .loader-bar::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 40%;
+        background: linear-gradient(90deg, transparent, #8c4f3a, transparent);
+        -webkit-animation: loaderSlide 1.2s ease-in-out infinite;
+        animation: loaderSlide 1.2s ease-in-out infinite;
+      }
+      @-webkit-keyframes loaderSlide {
+        0%   { -webkit-transform: translateX(-100%); }
+        100% { -webkit-transform: translateX(340%); }
+      }
+      @keyframes loaderSlide {
+        0%   { transform: translateX(-100%); }
+        100% { transform: translateX(340%); }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="initial-loader">
+      <div class="brand-seal" role="img" aria-label="dataagent"></div>
+      <div class="brand-meta">
+        <span class="brand-title">深度研究数据分析智能体</span>
+        <span class="brand-sub">dataagent</span>
+      </div>
+      <div class="loader-bar"></div>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      function hideInitialLoader() {
+        var loader = document.getElementById('initial-loader');
+        if (loader) {
+          setTimeout(function () {
+            loader.classList.add('hidden');
+            setTimeout(function () { loader.remove(); }, 350);
+          }, 250);
+        }
+      }
+      if (document.readyState === 'complete') hideInitialLoader();
+      else window.addEventListener('load', hideInitialLoader);
+      setTimeout(hideInitialLoader, 1400);
+    </script>
+  </body>
+</html>
