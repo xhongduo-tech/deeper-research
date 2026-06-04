@@ -1,0 +1,1098 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DataAgent Admin</title>
+  <link rel="icon" href="./favicon.svg" />
+  <style>
+    :root {
+      --bg:#f7f7f5; --panel:#fff; --border:rgba(0,0,0,.09); --border-2:rgba(0,0,0,.15);
+      --ink:#111; --ink-2:#374151; --ink-3:#6b7280; --ink-4:#9ca3af;
+      --brand:#5b4ee8; --brand-soft:rgba(91,78,232,.08); --brand-border:rgba(91,78,232,.3);
+      --green:#16a34a; --green-soft:rgba(22,163,74,.08);
+      --red:#dc2626; --red-soft:rgba(220,38,38,.08);
+      --amber:#d97706; --amber-soft:rgba(217,119,6,.08);
+      --radius:10px; --shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);
+      font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",Arial,sans-serif;
+    }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--ink);font-size:14px;line-height:1.5}
+    button,input,select,textarea{font:inherit;color:inherit}
+    button{cursor:pointer;border:none;background:none}
+    input,select,textarea{outline:none}
+    a{color:inherit;text-decoration:none}
+
+    /* ── Layout ── */
+    .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+    .login-card{width:min(400px,100%);background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:28px 24px;box-shadow:0 8px 32px rgba(0,0,0,.08)}
+    .app{display:grid;grid-template-columns:220px 1fr;min-height:100vh}
+    .side{background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto}
+    .main{min-width:0;padding:28px 32px 56px}
+
+    /* ── Sidebar ── */
+    .side-head{padding:18px 16px 12px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border)}
+    .logo-mark{width:28px;height:28px;border-radius:8px;background:#111;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+    .side-title{font-size:15px;font-weight:700;color:var(--ink)}
+    .side-sub{font-size:11px;color:var(--ink-4);margin-top:1px}
+    .nav{padding:10px 8px;flex:1}
+    .nav-btn{width:100%;display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:8px;font-size:13.5px;font-weight:500;color:var(--ink-3);transition:background .12s,color .12s;text-align:left}
+    .nav-btn:hover{background:rgba(0,0,0,.04);color:var(--ink)}
+    .nav-btn.active{background:var(--ink);color:#fff}
+    .nav-btn .icon{width:17px;height:17px;flex-shrink:0;opacity:.75}
+    .nav-btn.active .icon{opacity:1}
+    .side-foot{padding:12px 14px 16px;border-top:1px solid var(--border)}
+    .admin-who{font-size:12px;color:var(--ink-3);margin-bottom:8px}
+    .logout-btn{font-size:12.5px;color:var(--ink-3);padding:4px 0;display:flex;align-items:center;gap:5px}
+    .logout-btn:hover{color:var(--red)}
+
+    /* ── Page header ── */
+    .page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:24px}
+    h1{font-size:22px;font-weight:700;letter-spacing:-.02em}
+    .page-desc{font-size:13px;color:var(--ink-3);margin-top:4px;line-height:1.5}
+    .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+    /* ── Cards ── */
+    .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
+    .card-head{padding:14px 16px 0;display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .card-body{padding:16px}
+    .card-title{font-size:15px;font-weight:700;color:var(--ink)}
+    .card-desc{font-size:12.5px;color:var(--ink-3);margin-top:3px}
+    .divider{height:1px;background:var(--border);margin:0}
+
+    /* ── Metric cards ── */
+    .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:20px}
+    .metric{padding:16px}
+    .metric-val{font-size:28px;font-weight:800;letter-spacing:-.03em;color:var(--ink)}
+    .metric-label{font-size:12px;color:var(--ink-3);margin-top:4px}
+    .metric-sub{font-size:11.5px;color:var(--ink-4)}
+
+    /* ── Status pills ── */
+    .pill{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}
+    .pill.ok{background:var(--green-soft);color:var(--green)}
+    .pill.warn{background:var(--amber-soft);color:var(--amber)}
+    .pill.bad{background:var(--red-soft);color:var(--red)}
+    .pill.info{background:var(--brand-soft);color:var(--brand)}
+    .pill.neutral{background:rgba(0,0,0,.06);color:var(--ink-2)}
+    .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+    .dot.ok{background:var(--green)}
+    .dot.warn{background:var(--amber)}
+    .dot.bad{background:var(--red)}
+
+    /* ── Forms ── */
+    .field{display:flex;flex-direction:column;gap:5px}
+    .field-label{font-size:12px;font-weight:600;color:var(--ink-2)}
+    .input,.select,.textarea{border:1px solid var(--border-2);border-radius:8px;padding:8px 10px;background:#fff;color:var(--ink);font-size:13.5px;width:100%;transition:border-color .15s,box-shadow .15s}
+    .input:focus,.select:focus,.textarea:focus{border-color:var(--brand-border);box-shadow:0 0 0 3px var(--brand-soft)}
+    .input[type="password"]{letter-spacing:.1em}
+    .textarea{resize:vertical;min-height:68px}
+    .form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+    .form-grid .full{grid-column:1/-1}
+    .form-hint{font-size:11.5px;color:var(--ink-4);margin-top:3px}
+
+    /* ── Buttons ── */
+    .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600;transition:opacity .12s,background .12s;border:1px solid transparent}
+    .btn-primary{background:var(--ink);color:#fff}
+    .btn-primary:hover{opacity:.85}
+    .btn-secondary{background:#fff;color:var(--ink);border-color:var(--border-2)}
+    .btn-secondary:hover{background:rgba(0,0,0,.04)}
+    .btn-danger{background:var(--red-soft);color:var(--red);border-color:rgba(220,38,38,.2)}
+    .btn-danger:hover{background:rgba(220,38,38,.15)}
+    .btn-brand{background:var(--brand);color:#fff}
+    .btn-brand:hover{opacity:.88}
+    .btn-sm{padding:5px 10px;font-size:12px}
+    .btn:disabled{opacity:.45;cursor:not-allowed}
+
+    /* ── Toggle switch ── */
+    .toggle-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:13px 16px;border-bottom:1px solid var(--border)}
+    .toggle-row:last-child{border-bottom:none}
+    .toggle-info strong{font-size:13.5px;font-weight:600;color:var(--ink);display:block}
+    .toggle-info span{font-size:12px;color:var(--ink-3);margin-top:2px;display:block}
+    .switch{width:40px;height:22px;border-radius:999px;background:#d0d5dd;border:none;position:relative;padding:0;flex-shrink:0;transition:background .18s;cursor:pointer}
+    .switch::before{content:"";position:absolute;width:16px;height:16px;border-radius:50%;left:3px;top:3px;background:#fff;transition:left .18s}
+    .switch.on{background:var(--brand)}
+    .switch.on::before{left:21px}
+    .switch:disabled{opacity:.5;cursor:not-allowed}
+
+    /* ── Tables ── */
+    .table-wrap{overflow-x:auto;border-radius:0 0 var(--radius) var(--radius)}
+    table{width:100%;border-collapse:collapse;min-width:600px}
+    th{padding:10px 12px;text-align:left;font-size:11.5px;font-weight:700;color:var(--ink-3);background:rgba(0,0,0,.02);border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.04em}
+    td{padding:11px 12px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle}
+    tr:last-child td{border-bottom:none}
+    tr:hover td{background:rgba(0,0,0,.015)}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+    .truncate{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px}
+
+    /* ── Model Pool ── */
+    .model-card{border:1px solid var(--border);border-radius:var(--radius);background:#fff;margin-bottom:10px;overflow:hidden;transition:box-shadow .15s}
+    .model-card:hover{box-shadow:0 4px 16px rgba(0,0,0,.08)}
+    .model-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;background:rgba(0,0,0,.018);border-bottom:1px solid var(--border)}
+    .model-name-input{font-size:14px;font-weight:700;border:none;background:transparent;color:var(--ink);flex:1;min-width:0}
+    .model-name-input:focus{outline:none;border-bottom:1.5px solid var(--brand)}
+    .model-card-body{padding:14px}
+    .model-badges{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+    .preset-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;padding:10px 12px;background:rgba(0,0,0,.018);border-radius:8px;border:1px solid var(--border)}
+    .preset-btn{font-size:11.5px;padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:#fff;color:var(--ink-2);font-weight:600;transition:background .12s,border-color .12s}
+    .preset-btn:hover{border-color:var(--brand);color:var(--brand);background:var(--brand-soft)}
+
+    /* ── Health indicator ── */
+    .health-item{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border)}
+    .health-item:last-child{border-bottom:none}
+    .health-name{font-size:13px;font-weight:600}
+    .health-desc{font-size:12px;color:var(--ink-3);margin-top:2px}
+
+    /* ── Misc ── */
+    .empty{padding:40px;text-align:center;color:var(--ink-4);font-size:13px}
+    .hidden{display:none!important}
+    .grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+    .grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+    .gap-y-12{display:flex;flex-direction:column;gap:12px}
+    .mt-4{margin-top:4px} .mt-8{margin-top:8px} .mt-12{margin-top:12px} .mt-16{margin-top:16px} .mt-20{margin-top:20px}
+    .text-sm{font-size:12.5px} .text-muted{color:var(--ink-3)}
+    .info-box{padding:12px 14px;border-radius:8px;border:1px solid;font-size:13px;line-height:1.6}
+    .info-box.info{background:var(--brand-soft);border-color:var(--brand-border);color:var(--ink-2)}
+    .info-box.warn{background:var(--amber-soft);border-color:rgba(217,119,6,.3);color:var(--ink-2)}
+    .info-box.ok{background:var(--green-soft);border-color:rgba(22,163,74,.25);color:var(--ink-2)}
+    .section-title{font-size:13px;font-weight:700;color:var(--ink-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px}
+
+    /* ── Toast ── */
+    .toast{position:fixed;bottom:20px;right:20px;z-index:999;padding:10px 16px;border-radius:10px;background:#111;color:#fff;font-size:13px;font-weight:500;box-shadow:0 8px 24px rgba(0,0,0,.15);opacity:0;transform:translateY(8px);transition:.18s;pointer-events:none}
+    .toast.show{opacity:1;transform:translateY(0)}
+
+    /* ── Responsive ── */
+    @media(max-width:900px){
+      .app{grid-template-columns:1fr}
+      .side{position:relative;height:auto}
+      .metrics{grid-template-columns:repeat(2,1fr)}
+      .form-grid,.grid-2,.grid-3{grid-template-columns:1fr}
+      .main{padding:20px 16px 40px}
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Login ── -->
+<div id="loginWrap" class="login-wrap">
+  <form id="loginForm" class="login-card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+      <div class="logo-mark"><svg width="16" height="16" fill="none" viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg></div>
+      <div>
+        <div style="font-size:16px;font-weight:800">DataAgent Admin</div>
+        <div style="font-size:11px;color:var(--ink-3)">管理后台</div>
+      </div>
+    </div>
+    <p class="text-sm text-muted mt-12" style="line-height:1.6">配置模型池、数据源、质量门禁、用户与任务队列。</p>
+    <div class="field mt-16"><label class="field-label">管理员账号</label><input id="authId" class="input" value="admin" autocomplete="username" /></div>
+    <div class="field mt-8"><label class="field-label">管理员密码</label><input id="password" class="input" type="password" autocomplete="current-password" /></div>
+    <button class="btn btn-primary mt-16" style="width:100%" type="submit">进入管理后台</button>
+    <div id="loginErr" class="mt-8 text-sm" style="color:var(--red)"></div>
+  </form>
+</div>
+
+<!-- ── App ── -->
+<div id="app" class="app hidden">
+  <!-- Sidebar -->
+  <aside class="side">
+    <div class="side-head">
+      <div class="logo-mark"><svg width="14" height="14" fill="none" viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg></div>
+      <div><div class="side-title">DataAgent</div><div class="side-sub">Admin Console</div></div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="side-foot">
+      <div class="admin-who" id="adminWho">已登录</div>
+      <button class="logout-btn" id="logoutBtn">
+        <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+        退出登录
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+    <div class="page-head">
+      <div><h1 id="pageTitle"></h1><div class="page-desc" id="pageDesc"></div></div>
+      <div class="toolbar"><button class="btn btn-secondary" id="refreshBtn">↻ 刷新</button></div>
+    </div>
+    <section id="view"></section>
+  </main>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const BASE = (() => {
+  const {protocol, port, origin} = window.location;
+  if (protocol === "file:" || ["4173","5173","5174"].includes(port)) return "http://127.0.0.1:8000";
+  return origin;
+})();
+
+const TABS = [
+  { id:"overview",  label:"概览",      icon:`<svg class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>`, desc:"系统概览、健康检查和关键指标。" },
+  { id:"models",    label:"模型配置",  icon:`<svg class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M14.12 14.12a3 3 0 0 1-4.24 0M9.88 9.88a3 3 0 0 1 4.24 0"/><circle cx="12" cy="12" r="10"/></svg>`, desc:"模型池管理 — 配置前台可选模型、API 密钥和基础 URL。" },
+  { id:"rag",       label:"RAG & 搜索",icon:`<svg class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>`, desc:"知识库检索参数和联网搜索策略配置。" },
+  { id:"pipeline",  label:"质量门禁",  icon:`<svg class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`, desc:"生成流水线开关和交付质量门禁参数。" },
+  { id:"users",     label:"用户管理",  icon:`<svg class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>`, desc:"用户账号、角色、部门和历史任务管理。" },
+  { id:"tasks",      label:"任务队列",  icon:`<svg class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>`, desc:"生成任务列表、状态监控和错误排查。" },
+  { id:"datasources",label:"数据源",    icon:`<svg class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.657 4.03 3 9 3s9-1.343 9-3V5"/><path d="M3 11v6c0 1.657 4.03 3 9 3s9-1.343 9-3v-6"/></svg>`, desc:"官方数据库接入状态与API密钥配置。" },
+];
+
+const PRESETS = {
+  ollama:   { url:"http://localhost:11434/v1", key:"ollama",  note:"Ollama 本地服务" },
+  deepseek: { url:"https://api.deepseek.com/v1", key:"",     note:"DeepSeek API" },
+  qwen:     { url:"https://dashscope.aliyuncs.com/compatible-mode/v1", key:"", note:"通义千问 DashScope" },
+  openai:   { url:"https://api.openai.com/v1", key:"",       note:"OpenAI API" },
+  vllm:     { url:"http://localhost:8080/v1", key:"token",   note:"vLLM 本地" },
+};
+
+let S = { tab:"overview", me:null, stats:null, cfg:null, caps:null, users:[], reports:[], sources:[], datasources:[], selectedDatasource:null };
+
+const $  = id => document.getElementById(id);
+const tok = () => localStorage.getItem("da_admin_tok") || "";
+const setTok = v => localStorage.setItem("da_admin_tok", v);
+const clrTok = () => localStorage.removeItem("da_admin_tok");
+
+function esc(v){ return String(v??'').replace(/[&<>"']/g,s=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])) }
+function fmtDate(v){ return v ? new Date(v).toLocaleString("zh-CN",{hour12:false,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}) : "—" }
+function fmtSize(n){ n=Number(n||0); if(n<1024)return n+" B"; if(n<1048576)return (n/1024).toFixed(1)+" KB"; return (n/1048576).toFixed(1)+" MB" }
+
+function toast(msg, ok=true){
+  const t=$("toast"); t.textContent=msg;
+  t.style.background = ok ? "#111" : "#dc2626";
+  t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2400);
+}
+
+async function api(path, opts={}){
+  const headers = {"Content-Type":"application/json",...(opts.headers||{})};
+  if(tok()) headers.Authorization = "Bearer "+tok();
+  const res = await fetch(BASE+path, {...opts, headers});
+  if(res.status===401){ clrTok(); showLogin(); throw new Error("登录已过期，请重新登录"); }
+  if(!res.ok){ const b=await res.json().catch(()=>({})); throw new Error(b.detail||b.message||"请求失败 "+res.status); }
+  const txt = await res.text(); return txt ? JSON.parse(txt) : null;
+}
+
+function showLogin(){ $("loginWrap").classList.remove("hidden"); $("app").classList.add("hidden"); }
+function showApp(){ $("loginWrap").classList.add("hidden"); $("app").classList.remove("hidden"); }
+
+function pill(status){
+  const map = {
+    completed:["ok","完成"], running:["info","运行中"], pending:["warn","等待"],
+    failed:["bad","失败"], error:["bad","错误"], ok:["ok","正常"],
+    warn:["warn","警告"], disabled:["neutral","已停用"], active:["ok","活跃"]
+  };
+  const [cls,label] = map[status] || ["neutral", status||"未知"];
+  return `<span class="pill ${cls}"><span class="dot ${cls}"></span>${label}</span>`;
+}
+
+function renderNav(){
+  $("nav").innerHTML = TABS.map(t =>
+    `<button class="nav-btn${S.tab===t.id?" active":""}" data-tab="${t.id}">${t.icon}<span>${t.label}</span></button>`
+  ).join("");
+  $("nav").querySelectorAll("[data-tab]").forEach(b =>
+    b.onclick = () => { S.tab = b.dataset.tab; renderNav(); renderPage(); loadTab(); }
+  );
+}
+
+async function loadCommon(){
+  const [stats, cfg, caps] = await Promise.all([
+    api("/api/admin/stats").catch(()=>null),
+    api("/api/admin/config").catch(()=>null),
+    api("/api/admin/capabilities").catch(()=>null),
+  ]);
+  S.stats=stats; S.cfg=cfg; S.caps=caps;
+}
+
+async function loadTab(){
+  try {
+    if(S.tab==="models"){ const d=await api("/api/admin/model-pool"); S.models=d.items||[]; }
+    if(S.tab==="tasks"){ const d=await api("/api/admin/reports?limit=100"); S.reports=d.items||[]; }
+    if(S.tab==="users"){ const d=await api("/api/admin/users"); S.users=d.users||[]; }
+    if(S.tab==="datasources"){ await loadDatasources(); }
+    renderPage();
+  } catch(e){ toast(e.message, false); }
+}
+
+async function loadDatasources(){
+  try {
+    const d = await api("/api/admin/datasources");
+    S.datasources = d.sources || d.items || [];
+  } catch(e){
+    // Fallback: try the public endpoint
+    try {
+      const d = await api("/api/v1/official-sources");
+      S.datasources = (d.sources||[]).map(s=>({...s, requires_api_key:false, offline_doc_count:s.doc_count||0}));
+    } catch { S.datasources = []; }
+  }
+}
+
+function renderPage(){
+  const meta = TABS.find(t=>t.id===S.tab)||TABS[0];
+  $("pageTitle").textContent = meta.label;
+  $("pageDesc").textContent = meta.desc;
+  const views = { overview:viewOverview, models:viewModels, rag:viewRag, pipeline:viewPipeline, users:viewUsers, tasks:viewTasks, datasources:viewDatasources };
+  $("view").innerHTML = (views[S.tab]||viewOverview)();
+  bindPage();
+}
+
+// ── Overview ─────────────────────────────────────────────────────────────────
+function viewOverview(){
+  const s=S.stats||{}, cfg=S.cfg||{}, caps=S.caps||{};
+  const capItems = (caps.capabilities||[]).map(x=>`
+    <div class="health-item">
+      <div><div class="health-name">${esc(x.title)}</div><div class="health-desc">${esc(x.summary||"")}</div></div>
+      ${pill(x.status)}
+    </div>`).join("");
+  const deps = caps.dependencies||{};
+  const depList = Object.entries(deps).map(([k,v])=>`
+    <div class="health-item">
+      <div class="health-name">${esc(v.name||k)}</div>
+      ${v.ok ? '<span class="pill ok">可用</span>' : '<span class="pill bad">缺失</span>'}
+    </div>`).join("");
+  const activeModel = cfg.llm_model || "未配置";
+  const modelPool = (cfg.model_pool_items||[]);
+  return `
+    <div class="metrics">
+      ${metricCard("用户",s.total_users,"活跃 "+(s.active_users??"—"))}
+      ${metricCard("生成任务",s.total_reports,"今日 "+(s.today_reports??"—"))}
+      ${metricCard("数据源",s.total_kb,"文档 "+(s.total_docs??"—"))}
+      ${metricCard("索引块",s.total_chunks,"RAG 向量")}
+    </div>
+    <div class="grid-2" style="margin-bottom:14px">
+      <div class="card">
+        <div class="card-head"><span class="card-title">模型状态</span><button class="btn btn-secondary btn-sm" id="testLlmBtn">连接测试</button></div>
+        <div class="card-body">
+          <div class="info-box info mt-4" id="llmStatus">
+            正在加载模型状态…
+          </div>
+          <div class="mt-12">
+            <div class="section-title">当前生效</div>
+            <div style="font-size:13.5px;font-weight:600">${esc(activeModel)}</div>
+            <div class="text-sm text-muted mt-4">${esc(cfg.llm_base_url||"—")}</div>
+          </div>
+          ${modelPool.length>0 ? `<div class="mt-12"><div class="section-title">模型池（${modelPool.length} 个）</div>${modelPool.map(m=>`
+            <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+              ${m.active?'<span class="dot ok"></span>':'<span class="dot" style="background:var(--border-2)"></span>'}
+              <span style="font-size:13px;font-weight:600;flex:1">${esc(m.name||m.model)}</span>
+              <span class="mono">${esc(m.id||"")}</span>
+              ${m.active?'<span class="pill ok">默认</span>':''}
+            </div>`).join("")}</div>` : ""}
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><span class="card-title">系统能力</span></div>
+        <div>${capItems || '<div class="empty">暂无能力数据</div>'}</div>
+      </div>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-head"><span class="card-title">依赖项检测</span></div>
+        <div>${depList || '<div class="empty">—</div>'}</div>
+      </div>
+      <div class="card">
+        <div class="card-head"><span class="card-title">任务统计</span></div>
+        <div class="card-body">
+          ${Object.entries((caps.operations||{}).reports_by_status||{}).map(([s,n])=>`
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
+              <span>${pill(s)}</span><span style="font-size:15px;font-weight:700">${n}</span>
+            </div>`).join("") || '<div class="empty text-sm">暂无数据</div>'}
+        </div>
+      </div>
+    </div>`;
+}
+function metricCard(label,val,sub){
+  return `<div class="card metric"><div class="metric-val">${esc(val??"—")}</div><div class="metric-label">${label}</div><div class="metric-sub">${esc(sub||"")}</div></div>`;
+}
+
+// ── Models ───────────────────────────────────────────────────────────────────
+function viewModels(){
+  const cfg = S.cfg||{};
+  const models = S.models||[];
+  const rows = models.length ? models : [{
+    name:"默认模型", model:cfg.llm_model||"", base_url:cfg.llm_base_url||"",
+    api_key:"", enabled:true, active:true
+  }];
+  return `
+    <div class="grid-2" style="align-items:start">
+      <div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <div>
+            <span style="font-size:17px;font-weight:700">模型配置</span>
+            <div class="text-sm text-muted mt-4">首个模型为默认调用模型。多个模型时，前台选择器按顺序展示。</div>
+          </div>
+          <div class="toolbar">
+            <button class="btn btn-secondary btn-sm" id="addModel">+ 添加</button>
+            <button class="btn btn-primary btn-sm" id="saveModels">保存</button>
+          </div>
+        </div>
+
+        <div class="preset-bar">
+          <span style="font-size:11.5px;color:var(--ink-3);font-weight:600;align-self:center">一键填入：</span>
+          ${Object.entries(PRESETS).map(([k,p])=>`<button class="preset-btn" data-preset="${k}">${p.note}</button>`).join("")}
+        </div>
+
+        <div id="modelRows">${rows.map((m,i)=>modelCard(m,i)).join("")}</div>
+
+        <div class="toolbar mt-12">
+          <button class="btn btn-primary" id="saveModels2">💾 保存</button>
+          <button class="btn btn-secondary" id="testActiveModel">🔌 测试连接</button>
+        </div>
+        <div id="testResult" class="mt-8"></div>
+      </div>
+
+      <div class="gap-y-12">
+        <div class="card">
+          <div class="card-head"><span class="card-title">参考模型名</span></div>
+          <div class="card-body">
+            <div class="section-title">Ollama 本地</div>
+            ${["qwen2.5:72b","qwen2.5:32b","qwen2.5:7b","deepseek-r1:32b","llama3.3:70b","mistral:7b"].map(m=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)"><span class="mono" style="font-size:12.5px">${m}</span><button class="btn btn-secondary btn-sm" onclick="copyText('${m}')">复制</button></div>`).join("")}
+            <div class="section-title mt-12">DeepSeek API</div>
+            ${["deepseek-chat","deepseek-reasoner","deepseek-v4-flash","deepseek-v4-pro"].map(m=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)"><span class="mono" style="font-size:12.5px">${m}</span><button class="btn btn-secondary btn-sm" onclick="copyText('${m}')">复制</button></div>`).join("")}
+            <div class="section-title mt-12">通义千问</div>
+            ${["qwen-max","qwen-plus","qwen-turbo","qwen-long"].map(m=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)"><span class="mono" style="font-size:12.5px">${m}</span><button class="btn btn-secondary btn-sm" onclick="copyText('${m}')">复制</button></div>`).join("")}
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function modelCard(m, i){
+  const posLabel = i===0 ? '第 1 个（默认调用）' : i===1 ? '第 2 个' : `第 ${i+1} 个`;
+  return `<div class="model-card" data-model-card>
+    <div class="model-card-head">
+      <input class="model-name-input" data-f="name" value="${esc(m.name||m.model||"新模型")}" placeholder="前台显示名称（如：极速 / 专业推理）" />
+      <div class="model-badges">
+        <span style="font-size:11px;color:var(--ink-3);font-weight:500">${posLabel}</span>
+        <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer;font-weight:600">
+          <input type="checkbox" data-f="enabled" ${m.enabled!==false?"checked":""} style="cursor:pointer"> 启用
+        </label>
+        <button class="btn btn-danger btn-sm" data-remove-card>删除</button>
+      </div>
+    </div>
+    <div class="model-card-body">
+      <div class="form-grid">
+        <div class="field">
+          <label class="field-label">模型名称</label>
+          <input class="input" data-f="model" value="${esc(m.model||"")}" placeholder="deepseek-v4-flash / qwen2.5:72b" />
+          <div class="form-hint">发给 LLM API 的实际模型名</div>
+        </div>
+        <div class="field">
+          <label class="field-label">API Key</label>
+          <input class="input" type="password" data-f="api_key" value="${esc(m.api_key||"")}" placeholder="sk-… 或 ollama（本地免填）" />
+        </div>
+        <div class="field full">
+          <label class="field-label">Base URL</label>
+          <input class="input" data-f="base_url" value="${esc(m.base_url||"")}" placeholder="http://localhost:11434/v1" />
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── RAG & Search ─────────────────────────────────────────────────────────────
+function viewRag(){
+  const cfg = S.cfg||{};
+  return `
+    <div class="grid-2" style="align-items:start">
+      <div class="gap-y-12">
+        <div class="card">
+          <div class="card-head"><span class="card-title">RAG 知识库检索</span></div>
+          <div class="card-body gap-y-12">
+            <div class="toggle-row" style="border-radius:8px;border:1px solid var(--border);">
+              <div class="toggle-info"><strong>启用 RAG 检索</strong><span>上传文件、知识库文档在生成时用于上下文增强</span></div>
+              <button class="switch${cfg.rag_enabled==="true"?" on":""}" data-switch="rag_enabled"></button>
+            </div>
+            <div class="toggle-row" style="border-radius:8px;border:1px solid var(--border);">
+              <div class="toggle-info"><strong>混合检索</strong><span>同时使用向量检索与关键词 BM25 检索，提升召回率</span></div>
+              <button class="switch${cfg.rag_hybrid_retrieval==="true"?" on":""}" data-switch="rag_hybrid_retrieval"></button>
+            </div>
+            <div class="toggle-row" style="border-radius:8px;border:1px solid var(--border);">
+              <div class="toggle-info"><strong>重排序（Rerank）</strong><span>使用 rerank 模型对检索结果重新排序，需配置 rerank 模型</span></div>
+              <button class="switch${cfg.rag_rerank_enabled==="true"?" on":""}" data-switch="rag_rerank_enabled"></button>
+            </div>
+            <div class="form-grid">
+              <div class="field">
+                <label class="field-label">Top-K（检索条数）</label>
+                <input class="input" id="cfg_rag_top_k" value="${esc(cfg.rag_top_k||"8")}" type="number" min="1" max="20" />
+              </div>
+              <div class="field">
+                <label class="field-label">相关性阈值</label>
+                <input class="input" id="cfg_rag_score_threshold" value="${esc(cfg.rag_score_threshold||"0.15")}" type="number" step="0.01" min="0" max="1" />
+              </div>
+              <div class="field">
+                <label class="field-label">分块大小（字符数）</label>
+                <input class="input" id="cfg_rag_chunk_size" value="${esc(cfg.rag_chunk_size||"400")}" type="number" min="100" max="2000" />
+              </div>
+              <div class="field">
+                <label class="field-label">分块重叠（字符数）</label>
+                <input class="input" id="cfg_rag_chunk_overlap" value="${esc(cfg.rag_chunk_overlap||"60")}" type="number" min="0" max="400" />
+              </div>
+            </div>
+            <button class="btn btn-primary" id="saveRag">保存 RAG 配置</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><span class="card-title">Embedding 模型</span></div>
+          <div class="card-body gap-y-12">
+            <div class="form-grid">
+              <div class="field full">
+                <label class="field-label">Embedding 模型名</label>
+                <input class="input" id="cfg_embed_model" value="${esc(cfg.embed_model||"nomic-embed-text")}" />
+                <div class="form-hint">Ollama: nomic-embed-text / mxbai-embed-large；OpenAI: text-embedding-3-small</div>
+              </div>
+              <div class="field full">
+                <label class="field-label">Embedding Base URL（留空则复用主模型 URL）</label>
+                <input class="input" id="cfg_embed_base_url" value="${esc(cfg.embed_base_url||"")}" placeholder="http://localhost:11434/v1" />
+              </div>
+              <div class="field full">
+                <label class="field-label">Embedding API Key</label>
+                <input class="input" type="password" id="cfg_embed_api_key" value="${esc(cfg.embed_api_key||"")}" placeholder="ollama 或云端 key" />
+              </div>
+            </div>
+            <button class="btn btn-primary" id="saveEmbed">保存 Embedding 配置</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="gap-y-12">
+        <div class="card">
+          <div class="card-head"><span class="card-title">联网搜索策略</span></div>
+          <div class="card-body">
+            <div class="info-box warn">
+              <strong>⚠️ 内网部署说明：</strong>本系统为内网/离线部署，外网搜索在运行时<strong>强制禁用</strong>，管理台开关无法改变这一行为。前台配置仅作记录，实际调用永远返回"已关闭"。
+            </div>
+            <div class="mt-12">
+              <div class="toggle-row" style="border-radius:8px;border:1px solid var(--border);opacity:.55">
+                <div class="toggle-info"><strong>启用外网搜索</strong><span>仅显示用途，后端运行时已硬编码禁用</span></div>
+                <button class="switch${cfg.enable_external_search==="true"?" on":""}" data-switch="enable_external_search" disabled></button>
+              </div>
+            </div>
+            <div class="mt-12 info-box ok">
+              <strong>如何接入内网全文检索：</strong><br>
+              可通过修改 <code>backend/app/services/web_search_service.py</code> 中的 <code>search_web</code> 函数，
+              将其指向内网 Elasticsearch、Solr 或内部门户搜索接口。接口约定与外网版本一致，无需改动上层调用方。
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><span class="card-title">数据源列表</span></div>
+          <div class="card-body">
+            <button class="btn btn-secondary btn-sm" id="loadSources">加载数据源</button>
+            <div id="sourcesTable" class="mt-8"></div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ── Pipeline ─────────────────────────────────────────────────────────────────
+function viewPipeline(){
+  const cfg = S.cfg||{}, caps = S.caps||{};
+  const cap = (caps.capabilities||[]).find(x=>x.id==="generation_pipeline")||{};
+  const tplRows = (cap.templates||[]).map(t=>`<tr><td>${esc(t.name)}</td><td>${t.available?'<span class="pill ok">可用</span>':'<span class="pill bad">缺失</span>'}</td></tr>`).join("");
+  return `
+    <div class="grid-2" style="align-items:start">
+      <div class="gap-y-12">
+        <div class="card">
+          <div class="card-head"><span class="card-title">生成流水线</span><button class="btn btn-primary btn-sm" id="savePipeline">保存</button></div>
+          <div>
+            ${tog("use_unified_pipeline","Unified Pipeline","启用真实 PPTX 模板 DNA 提取、文档/表格结构化规格生成。推荐开启。",cfg)}
+            ${tog("use_simple_pipeline","Simple Pipeline（降级）","旧版简化链路，仅在 Unified Pipeline 故障时使用。",cfg)}
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">质量门禁</span></div>
+          <div>
+            ${tog("ppt_render_qa_required","PPT 渲染 QA","启用图像级质检，严重渲染问题阻断交付（需 LibreOffice + PyMuPDF）。",cfg)}
+            ${tog("word_claim_gate_required","Word 数字核验","逐 claim 检查数字与来源锚点，避免编造数据。",cfg)}
+            ${tog("excel_quality_gate_required","Excel 工作簿 QA","检查表格、公式、图表和数据来源说明。",cfg)}
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">交付门禁模式</span></div>
+          <div class="card-body">
+            <div class="field">
+              <label class="field-label">门禁模式</label>
+              <select class="select" id="cfg_quality_gate_mode">
+                <option ${cfg.quality_gate_mode==="strict"?"selected":""} value="strict">strict（严格 — 失败时阻断下载）</option>
+                <option ${cfg.quality_gate_mode==="warn"?"selected":""} value="warn">warn（宽松 — 失败时仅警告，允许下载）</option>
+              </select>
+            </div>
+            <button class="btn btn-primary mt-12 btn-sm" id="saveGateMode">保存门禁模式</button>
+          </div>
+        </div>
+      </div>
+      <div class="gap-y-12">
+        <div class="card">
+          <div class="card-head"><span class="card-title">流水线当前状态</span></div>
+          <div class="card-body">
+            <div class="text-sm text-muted" style="line-height:1.7">${esc(cap.summary||"暂无状态信息")}</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">PPT 内置模板</span></div>
+          <div class="table-wrap">
+            <table><thead><tr><th>模板名称</th><th>状态</th></tr></thead>
+            <tbody>${tplRows||`<tr><td colspan="2"><div class="empty">暂无模板信息</div></td></tr>`}</tbody></table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">沙箱配置</span></div>
+          <div class="card-body">
+            <div class="field">
+              <label class="field-label">代码执行超时（秒）</label>
+              <input class="input" id="cfg_sandbox_timeout" value="${esc(cfg.sandbox_timeout||"30")}" type="number" min="5" max="300" />
+            </div>
+            <button class="btn btn-primary mt-8 btn-sm" id="saveSandbox">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+function tog(key, name, desc, cfg){
+  return `<div class="toggle-row"><div class="toggle-info"><strong>${name}</strong><span>${desc}</span></div><button class="switch${cfg[key]==="true"?" on":""}" data-switch="${key}"></button></div>`;
+}
+
+// ── Users ─────────────────────────────────────────────────────────────────────
+function viewUsers(){
+  const rows = S.users.map(u=>`<tr>
+    <td><div style="font-weight:600">${esc(u.username||u.auth_id)}</div><div class="text-sm text-muted mono">${esc(u.auth_id||"")}</div></td>
+    <td>${esc(u.department||"—")}</td>
+    <td>${esc(u.role)}</td>
+    <td>${u.is_active?'<span class="pill ok">活跃</span>':'<span class="pill neutral">已停用</span>'}</td>
+    <td style="font-weight:600">${u.report_count||0}</td>
+    <td class="text-sm text-muted">${fmtDate(u.last_report_at)}</td>
+    <td>
+      <button class="btn ${u.is_active?"btn-danger":"btn-secondary"} btn-sm" data-toggle-user="${u.id}" data-active="${u.is_active}">${u.is_active?"停用":"启用"}</button>
+    </td>
+  </tr>`).join("");
+  return `<div class="card">
+    <div class="card-head"><span class="card-title">用户管理</span><span class="pill info">${S.users.length} 人</span></div>
+    <div class="table-wrap">
+      <table><thead><tr><th>用户</th><th>部门</th><th>角色</th><th>状态</th><th>任务数</th><th>最近任务</th><th>操作</th></tr></thead>
+      <tbody>${rows||`<tr><td colspan="7"><div class="empty">暂无用户</div></td></tr>`}</tbody></table>
+    </div>
+  </div>`;
+}
+
+// ── Tasks ─────────────────────────────────────────────────────────────────────
+function viewTasks(){
+  const rows = S.reports.map(r=>`<tr>
+    <td class="mono" style="color:var(--ink-3)">#${r.id}</td>
+    <td class="truncate" style="max-width:200px" title="${esc(r.title)}">${esc(r.title)}</td>
+    <td>${esc(r.user?.username||r.user?.auth_id||"—")}</td>
+    <td><span class="pill neutral">${esc(r.output_format||"—")}</span></td>
+    <td>${pill(r.status)}</td>
+    <td>${Math.round((r.progress||0)*100)}%</td>
+    <td class="text-sm text-muted">${esc(r.phase||"")}</td>
+    <td class="text-sm text-muted">${fmtDate(r.created_at)}</td>
+    ${r.error_message?`<td class="text-sm" style="color:var(--red);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.error_message||"")}">${esc((r.error_message||"").slice(0,60))}</td>`:"<td>—</td>"}
+  </tr>`).join("");
+  return `<div class="card">
+    <div class="card-head">
+      <span class="card-title">任务队列</span>
+      <div class="toolbar">
+        <span class="pill info">${S.reports.length} 条（最近 100）</span>
+        <button class="btn btn-secondary btn-sm" id="reloadTasks">刷新</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table><thead><tr><th>ID</th><th>任务标题</th><th>用户</th><th>格式</th><th>状态</th><th>进度</th><th>阶段</th><th>创建时间</th><th>错误信息</th></tr></thead>
+      <tbody>${rows||`<tr><td colspan="9"><div class="empty">暂无任务记录</div></td></tr>`}</tbody></table>
+    </div>
+  </div>`;
+}
+
+// ── Datasources ───────────────────────────────────────────────────────────────
+function viewDatasources(){
+  const sources = S.datasources || [];
+
+  // Group by category
+  const byCategory = {};
+  sources.forEach(s => {
+    const cat = s.category || "其他";
+    if(!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push(s);
+  });
+
+  function sourcePill(s){
+    if(!s.requires_api_key) return `<span class="pill ok"><span class="dot ok"></span>离线</span>`;
+    if(s.api_key_configured) return `<span class="pill info"><span class="dot info" style="background:var(--brand)"></span>已配置</span>`;
+    return `<span class="pill warn"><span class="dot warn"></span>待配置</span>`;
+  }
+
+  const listItems = Object.entries(byCategory).map(([cat,items])=>`
+    <div class="section-title" style="margin-top:14px;margin-bottom:6px">${esc(cat)}</div>
+    ${items.map(s=>`
+      <div class="ds-list-item${S.selectedDatasource?.key===s.key?" ds-list-item-active":""}" data-ds-key="${esc(s.key)}" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;cursor:pointer;border:1px solid transparent;margin-bottom:3px;transition:background .1s;">
+        <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:500">${esc(s.name)}</div>
+        ${sourcePill(s)}
+      </div>`).join("")}
+  `).join("");
+
+  const sel = S.selectedDatasource;
+  let detail = `<div class="empty" style="padding:60px 20px">← 点击左侧数据源查看详情</div>`;
+  if(sel){
+    const hasKey = !!sel.requires_api_key;
+    detail = `
+      <div style="padding:18px">
+        <div style="font-size:17px;font-weight:700;margin-bottom:4px">${esc(sel.name)}</div>
+        <div style="font-size:12px;color:var(--ink-3);margin-bottom:12px">${esc(sel.category||"")}</div>
+        <p style="font-size:13px;color:var(--ink-2);line-height:1.7;margin-bottom:16px">${esc(sel.description||"")}</p>
+
+        ${!hasKey ? `
+          <div class="info-box ok" style="margin-bottom:16px">✓ 此数据源无需API密钥，离线可用</div>
+        ` : `
+          <div class="card-head" style="padding:0;margin-bottom:12px"><span class="card-title" style="font-size:14px">API 密钥配置</span></div>
+          <div class="field" style="margin-bottom:10px">
+            <label class="field-label">API Key</label>
+            <div style="display:flex;gap:6px;align-items:center">
+              <input class="input" id="ds_api_key_input" type="password" placeholder="输入 API 密钥…" style="flex:1" />
+              <button class="btn btn-secondary btn-sm" id="ds_show_key" title="显示/隐藏">👁</button>
+            </div>
+            ${sel.api_key_configured ? `<div class="form-hint" style="color:var(--green)">当前状态：已配置 ●●●●●●</div>` : `<div class="form-hint">当前状态：未配置</div>`}
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+            <button class="btn btn-primary btn-sm" id="ds_save_key">保存</button>
+            <button class="btn btn-secondary btn-sm" id="ds_test_conn">测试连接</button>
+            ${sel.api_key_configured ? `<button class="btn btn-danger btn-sm" id="ds_clear_key">清除</button>` : ""}
+          </div>
+          <div id="ds_test_result" style="margin-bottom:12px"></div>
+        `}
+
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
+          <div>
+            <strong style="font-size:13px">启用状态</strong>
+            <span style="font-size:12px;color:var(--ink-3);display:block;margin-top:2px">控制该数据源是否参与研究检索</span>
+          </div>
+          <button class="switch${sel.is_active?" on":""}" id="ds_toggle_active"></button>
+        </div>
+
+        <div style="font-size:12px;color:var(--ink-3)">
+          离线数据：<strong style="color:var(--ink-2)">${(sel.offline_doc_count||sel.doc_count||0).toLocaleString()} 条记录</strong>
+          ${sel.coverage ? ` · 覆盖：${esc(sel.coverage)}` : ""}
+        </div>
+      </div>`;
+  }
+
+  return `
+    <div style="display:grid;grid-template-columns:35% 1fr;gap:16px;align-items:start">
+      <div class="card" style="overflow:hidden">
+        <div class="card-head" style="padding-bottom:10px">
+          <span class="card-title">数据源列表</span>
+          <span class="pill neutral">${sources.length} 个</span>
+        </div>
+        <div style="padding:0 8px 12px;max-height:calc(100vh - 220px);overflow-y:auto">
+          ${sources.length ? listItems : `<div class="empty" style="padding:24px">暂无数据源<br><button class="btn btn-secondary btn-sm" style="margin-top:8px" id="ds_reload">加载</button></div>`}
+        </div>
+      </div>
+      <div class="card" style="min-height:320px">
+        ${detail}
+      </div>
+    </div>`;
+}
+
+// ── Bind events ───────────────────────────────────────────────────────────────
+function bindPage(){
+  // Toggle switches
+  document.querySelectorAll(".switch:not([disabled])").forEach(b => b.onclick = ()=>b.classList.toggle("on"));
+
+  // Model card delete
+  document.querySelectorAll("[data-remove-card]").forEach(b => b.onclick = ()=>b.closest("[data-model-card]").remove());
+
+  // Add model
+  const addBtn = $("addModel");
+  if(addBtn) addBtn.onclick = ()=>{
+    const rows = document.querySelectorAll("[data-model-card]");
+    $("modelRows").insertAdjacentHTML("beforeend", modelCard({enabled:true,active:false}, rows.length));
+    bindPage();
+  };
+
+  // Preset buttons
+  document.querySelectorAll("[data-preset]").forEach(b => b.onclick = ()=>{
+    const p = PRESETS[b.dataset.preset];
+    if(!p) return;
+    const activeCard = document.querySelector("[data-model-card]:last-child") || document.querySelector("[data-model-card]");
+    if(!activeCard) return;
+    const urlIn = activeCard.querySelector('[data-f="base_url"]');
+    const keyIn = activeCard.querySelector('[data-f="api_key"]');
+    if(urlIn) urlIn.value = p.url;
+    if(keyIn) keyIn.value = p.key;
+    toast("已填入 " + p.note + " 配置");
+  });
+
+  // Save models
+  ["saveModels","saveModels2"].forEach(id => {
+    const btn = $(id);
+    if(btn) btn.onclick = async()=>{
+      try{ btn.disabled=true; btn.textContent="保存中…";
+        await api("/api/admin/model-pool",{method:"PUT",body:JSON.stringify({items:collectModels()})});
+        toast("模型池已保存 ✓");
+        S.models = collectModels();
+      } catch(e){ toast(e.message, false); } finally{ btn.disabled=false; btn.textContent=btn.id==="saveModels2"?"💾 保存模型池":"保存"; }
+    };
+  });
+
+  // Test active model
+  const testBtn = $("testActiveModel");
+  if(testBtn) testBtn.onclick = async()=>{
+    const models = collectModels();
+    const m = models.find(x=>x.active) || models[0];
+    if(!m){ toast("请先填写模型信息", false); return; }
+    testBtn.disabled=true; testBtn.textContent="测试中…";
+    try{
+      const r = await api("/api/admin/config/test",{method:"POST",body:JSON.stringify({llm_base_url:m.base_url,llm_model:m.model,llm_api_key:m.api_key})});
+      const res = $("testResult");
+      if(res) res.innerHTML = r.ok
+        ? `<div class="info-box ok">✓ 模型连通：${esc(r.model||m.model)}</div>`
+        : `<div class="info-box warn">✗ 连接失败：${esc(r.error||"未知错误")}</div>`;
+      toast(r.ok?"连接成功 ✓":"连接失败", r.ok);
+    } catch(e){ toast(e.message, false); } finally{ testBtn.disabled=false; testBtn.textContent="🔌 测试主模型连接"; }
+  };
+
+  // Test LLM (overview)
+  const testLlmBtn = $("testLlmBtn");
+  if(testLlmBtn) testLlmBtn.onclick = async()=>{
+    testLlmBtn.disabled=true; testLlmBtn.textContent="检测中…";
+    try{
+      const r = await fetch(BASE+"/api/system/llm/health").then(x=>x.json());
+      const el = $("llmStatus");
+      if(el) el.innerHTML = r.ok
+        ? `<b>✓ 模型在线</b>：${esc(r.model||"—")}`
+        : `<b>✗ 模型不可达</b>：${esc(r.error||"未知错误")}`;
+      if(el) el.className = "info-box " + (r.ok?"ok":"warn") + " mt-4";
+      toast(r.ok?"模型连接正常":"模型连接失败", r.ok);
+    } catch(e){ toast(e.message, false); } finally{ testLlmBtn.disabled=false; testLlmBtn.textContent="连接测试"; }
+  };
+  // Auto-load LLM status on overview
+  if(S.tab==="overview") setTimeout(()=>testLlmBtn?.click(), 300);
+
+  // Save RAG
+  const saveRag = $("saveRag");
+  if(saveRag) saveRag.onclick = async()=>{
+    const switches = {}; document.querySelectorAll(".switch:not([disabled])").forEach(b=>switches[b.dataset.switch]=b.classList.contains("on")?"true":"false");
+    const data = {...switches,
+      rag_top_k: $("cfg_rag_top_k")?.value,
+      rag_chunk_size: $("cfg_rag_chunk_size")?.value,
+      rag_chunk_overlap: $("cfg_rag_chunk_overlap")?.value,
+      rag_score_threshold: $("cfg_rag_score_threshold")?.value,
+    };
+    try{ saveRag.disabled=true; await api("/api/admin/config",{method:"PUT",body:JSON.stringify(data)}); toast("RAG 配置已保存 ✓"); await loadCommon(); }
+    catch(e){ toast(e.message, false); } finally{ saveRag.disabled=false; }
+  };
+
+  // Save embed
+  const saveEmbed = $("saveEmbed");
+  if(saveEmbed) saveEmbed.onclick = async()=>{
+    const data = { embed_model:$("cfg_embed_model")?.value, embed_base_url:$("cfg_embed_base_url")?.value, embed_api_key:$("cfg_embed_api_key")?.value };
+    try{ saveEmbed.disabled=true; await api("/api/admin/config",{method:"PUT",body:JSON.stringify(data)}); toast("Embedding 配置已保存 ✓"); await loadCommon(); }
+    catch(e){ toast(e.message, false); } finally{ saveEmbed.disabled=false; }
+  };
+
+  // Load sources
+  const loadSrc = $("loadSources");
+  if(loadSrc) loadSrc.onclick = async()=>{
+    loadSrc.disabled=true; loadSrc.textContent="加载中…";
+    try{
+      const d = await api("/api/admin/data-sources");
+      const el = $("sourcesTable");
+      if(el) el.innerHTML = d.items?.length
+        ? `<table style="width:100%"><thead><tr><th>名称</th><th>类型</th><th>文档</th><th>块数</th><th>大小</th></tr></thead><tbody>${d.items.map(s=>`<tr><td>${esc(s.name)}</td><td>${esc(s.source_type||"general")}</td><td>${s.doc_count||0}</td><td>${s.chunk_count||0}</td><td>${fmtSize(s.total_size)}</td></tr>`).join("")}</tbody></table>`
+        : "<div class='empty'>暂无数据源</div>";
+    } catch(e){ toast(e.message, false); } finally{ loadSrc.disabled=false; loadSrc.textContent="加载数据源"; }
+  };
+
+  // Save pipeline
+  const savePipeline = $("savePipeline");
+  if(savePipeline) savePipeline.onclick = async()=>{
+    const data = {}; document.querySelectorAll(".switch:not([disabled])").forEach(b=>data[b.dataset.switch]=b.classList.contains("on")?"true":"false");
+    try{ savePipeline.disabled=true; await api("/api/admin/config",{method:"PUT",body:JSON.stringify(data)}); toast("流水线配置已保存 ✓"); await loadCommon(); renderPage(); }
+    catch(e){ toast(e.message, false); } finally{ savePipeline.disabled=false; }
+  };
+
+  // Save gate mode
+  const saveGate = $("saveGateMode");
+  if(saveGate) saveGate.onclick = async()=>{
+    const mode = $("cfg_quality_gate_mode")?.value;
+    try{ saveGate.disabled=true; await api("/api/admin/config",{method:"PUT",body:JSON.stringify({quality_gate_mode:mode})}); toast("门禁模式已保存 ✓"); await loadCommon(); }
+    catch(e){ toast(e.message, false); } finally{ saveGate.disabled=false; }
+  };
+
+  // Save sandbox
+  const saveSandbox = $("saveSandbox");
+  if(saveSandbox) saveSandbox.onclick = async()=>{
+    const v = $("cfg_sandbox_timeout")?.value;
+    try{ saveSandbox.disabled=true; await api("/api/admin/config",{method:"PUT",body:JSON.stringify({sandbox_timeout:v})}); toast("沙箱配置已保存 ✓"); await loadCommon(); }
+    catch(e){ toast(e.message, false); } finally{ saveSandbox.disabled=false; }
+  };
+
+  // Toggle users
+  document.querySelectorAll("[data-toggle-user]").forEach(b => b.onclick = async()=>{
+    const id=b.dataset.toggleUser, active=b.dataset.active!=="true";
+    try{ b.disabled=true; await api(`/api/admin/users/${id}`,{method:"PUT",body:JSON.stringify({is_active:active})}); toast("用户状态已更新"); await loadTab(); }
+    catch(e){ toast(e.message, false); b.disabled=false; }
+  });
+
+  // Reload tasks
+  const reloadTasks = $("reloadTasks");
+  if(reloadTasks) reloadTasks.onclick = ()=>loadTab();
+
+  // ── Datasources ──
+  // Source list item click → select
+  document.querySelectorAll(".ds-list-item").forEach(item => {
+    item.onmouseenter = ()=>{ if(!item.classList.contains("ds-list-item-active")) item.style.background="rgba(0,0,0,.04)"; };
+    item.onmouseleave = ()=>{ if(!item.classList.contains("ds-list-item-active")) item.style.background=""; };
+    item.onclick = ()=>{
+      const key = item.dataset.dsKey;
+      S.selectedDatasource = S.datasources.find(s=>s.key===key)||null;
+      renderPage();
+    };
+  });
+  // Style active item
+  document.querySelectorAll(".ds-list-item-active").forEach(el=>{
+    el.style.background="var(--brand-soft)";
+    el.style.borderColor="var(--brand-border)";
+    el.style.color="var(--brand)";
+  });
+
+  // Reload datasources button (empty state)
+  const dsReload = $("ds_reload");
+  if(dsReload) dsReload.onclick = async()=>{ await loadDatasources(); renderPage(); };
+
+  // Show/hide API key
+  const dsShowKey = $("ds_show_key");
+  if(dsShowKey) dsShowKey.onclick = ()=>{
+    const inp = $("ds_api_key_input");
+    if(inp) inp.type = inp.type==="password" ? "text" : "password";
+  };
+
+  // Save API key
+  const dsSaveKey = $("ds_save_key");
+  if(dsSaveKey) dsSaveKey.onclick = async()=>{
+    const key = S.selectedDatasource?.key;
+    const val = $("ds_api_key_input")?.value?.trim();
+    if(!key||!val){ toast("请输入 API 密钥", false); return; }
+    try{
+      dsSaveKey.disabled=true; dsSaveKey.textContent="保存中…";
+      await api(`/api/admin/datasources/${encodeURIComponent(key)}/apikey`,{method:"PUT",body:JSON.stringify({api_key:val})});
+      toast("API 密钥已保存 ✓");
+      if(S.selectedDatasource) S.selectedDatasource.api_key_configured=true;
+      renderPage();
+    } catch(e){ toast(e.message||"保存失败", false); }
+    finally{ if(dsSaveKey){ dsSaveKey.disabled=false; dsSaveKey.textContent="保存"; } }
+  };
+
+  // Test connection
+  const dsTest = $("ds_test_conn");
+  if(dsTest) dsTest.onclick = async()=>{
+    const key = S.selectedDatasource?.key;
+    if(!key) return;
+    dsTest.disabled=true; dsTest.textContent="测试中…";
+    try{
+      const r = await api(`/api/admin/datasources/${encodeURIComponent(key)}/test`);
+      const el = $("ds_test_result");
+      if(el) el.innerHTML = r.ok
+        ? `<div class="info-box ok">✓ 连接成功</div>`
+        : `<div class="info-box warn">✗ 连接失败：${esc(r.error||"未知错误")}</div>`;
+      toast(r.ok?"连接成功":"连接失败", r.ok);
+    } catch(e){
+      const el=$("ds_test_result");
+      if(el) el.innerHTML=`<div class="info-box warn">暂不可用：${esc(e.message)}</div>`;
+    }
+    finally{ if(dsTest){ dsTest.disabled=false; dsTest.textContent="测试连接"; } }
+  };
+
+  // Clear API key
+  const dsClear = $("ds_clear_key");
+  if(dsClear) dsClear.onclick = async()=>{
+    const key = S.selectedDatasource?.key;
+    if(!key) return;
+    if(!confirm("确认清除 API 密钥？")) return;
+    try{
+      await api(`/api/admin/datasources/${encodeURIComponent(key)}/apikey`,{method:"DELETE"});
+      toast("API 密钥已清除");
+      if(S.selectedDatasource) S.selectedDatasource.api_key_configured=false;
+      renderPage();
+    } catch(e){ toast(e.message||"操作失败，暂不可用", false); }
+  };
+
+  // Toggle active
+  const dsToggle = $("ds_toggle_active");
+  if(dsToggle) dsToggle.onclick = async()=>{
+    const sel = S.selectedDatasource;
+    if(!sel) return;
+    const newActive = !dsToggle.classList.contains("on");
+    dsToggle.classList.toggle("on");
+    try{
+      await api(`/api/v1/official-sources/${encodeURIComponent(sel.key)}/toggle`,{method:"POST",body:JSON.stringify({is_active:newActive})});
+      sel.is_active = newActive;
+      toast(newActive?"已启用":"已禁用");
+      await loadDatasources();
+      S.selectedDatasource = S.datasources.find(s=>s.key===sel.key)||sel;
+      renderPage();
+    } catch(e){
+      // Revert visual
+      dsToggle.classList.toggle("on");
+      toast("操作失败，暂不可用", false);
+    }
+  };
+}
+
+function collectModels(){
+  // Auto-assign IDs: 1st → "flash", 2nd → "pro", rest → "model-N"
+  const AUTO_IDS = ["flash","pro"];
+  return Array.from(document.querySelectorAll("[data-model-card]")).map((card, idx)=>{
+    const get = f => card.querySelector(`[data-f="${f}"]`);
+    const name = (get("name")?.value.trim()) || "";
+    const model = (get("model")?.value.trim()) || "";
+    const base_url = (get("base_url")?.value.trim().replace(/\/+$/,"")) || "";
+    const api_key = (get("api_key")?.value) || "";
+    const enabled = get("enabled")?.checked ?? true;
+    return {
+      id: AUTO_IDS[idx] || ("model-"+(idx+1)),
+      name: name || model,
+      model,
+      base_url,
+      api_key,
+      tier: "standard",
+      description: "",
+      enabled,
+      active: idx === 0,  // first model is always default
+    };
+  }).filter(m => m.model && m.base_url);
+}
+
+function copyText(text){
+  navigator.clipboard?.writeText(text).then(()=>toast("已复制: "+text)).catch(()=>toast(text));
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+async function boot(){
+  renderNav();
+  if(!tok()) return showLogin();
+  try{
+    S.me = await api("/api/auth/me");
+    if(S.me.role !== "admin") throw new Error("当前账号不是管理员");
+    $("adminWho").textContent = (S.me.username||S.me.auth_id||"admin") + " · 管理员";
+    showApp();
+    await loadCommon();
+    renderPage();
+    await loadTab();
+  } catch(e){ $("loginErr").textContent = e.message; showLogin(); }
+}
+
+$("loginForm").onsubmit = async e => {
+  e.preventDefault(); $("loginErr").textContent = "";
+  try{
+    const d = await api("/api/auth/login",{method:"POST",body:JSON.stringify({auth_id:$("authId").value.trim(),password:$("password").value})});
+    setTok(d.access_token); await boot();
+  } catch(e){ $("loginErr").textContent = e.message; }
+};
+$("logoutBtn").onclick = () => { clrTok(); showLogin(); };
+$("refreshBtn").onclick = async() => { await loadCommon(); await loadTab(); toast("已刷新"); };
+
+boot();
+</script>
+</body>
+</html>

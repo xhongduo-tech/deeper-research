@@ -16,6 +16,7 @@ from app.api import ontology, sentiment
 from app.api import html_report
 from app.api import lab as lab_api
 from app.api import official_sources
+from app.api import admin_datasources
 from app.services.auth_service import ensure_admin_user
 from app.skills import register_all_skills
 
@@ -47,6 +48,10 @@ async def lifespan(app: FastAPI):
     async with async_session() as db:
         from app.services.datasource_registry import init_official_sources
         await init_official_sources(db)
+
+    async with async_session() as db:
+        from app.services.offline_seeder import seed_offline_data
+        await seed_offline_data(db)
 
     register_all_skills()
     logger.info("DataAgent Studio backend started")
@@ -89,5 +94,6 @@ app.include_router(sentiment.router)
 app.include_router(html_report.router)
 app.include_router(lab_api.router)
 app.include_router(official_sources.router)
+app.include_router(admin_datasources.router)
 # Swarm router disabled — simplified pipeline no longer uses multi-agent swarm
 # app.include_router(swarm.router)

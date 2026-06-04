@@ -229,12 +229,74 @@ def _select_sources(query: str, domain_hints: list[str]) -> list[str]:
     return selected[:_MAX_SOURCES_PER_QUERY]
 
 
+async def _search_offline_kb_for_source(source_key: str, query: str) -> DataSourceResult | None:
+    """Fallback: text-substring search over offline KB chunks for the given source.
+
+    Used when the connector fails or returns empty results in intranet/offline mode.
+    Offline KBs are identified by 【离线】 name prefix; no embedding required.
+    """
+    import re
+    from app.database import async_session
+    from app.models.knowledge_base import KnowledgeBase, KBChunk
+    from sqlalchemy import select as sa_select
+
+    try:
+        async with async_session() as db:
+            offline_kbs = (await db.execute(
+                sa_select(KnowledgeBase.id).where(KnowledgeBase.name.like("【离线】%"))
+            )).scalars().all()
+
+            if not offline_kbs:
+                return None
+
+            keywords = [kw.strip() for kw in re.split(r"[\s，。？！、]+", query) if len(kw.strip()) >= 2]
+            if not keywords:
+                keywords = [query[:10]] if query else []
+
+            scored: list[tuple[int, str]] = []
+            for kb_id in offline_kbs:
+                chunks = (await db.execute(
+                    sa_select(KBChunk).where(KBChunk.kb_id == kb_id).limit(300)
+                )).scalars().all()
+                for chunk in chunks:
+                    content = chunk.content or ""
+                    score = sum(1 for kw in keywords if kw in content)
+                    if score > 0:
+                        scored.append((score, content))
+
+            if not scored:
+                return None
+
+            scored.sort(key=lambda x: x[0], reverse=True)
+            articles = [
+                {"title": f"【离线】{source_key}", "summary": c, "published": "离线预加载", "url": ""}
+                for _, c in scored[:8]
+            ]
+
+            connector = get_connector(source_key)
+            return DataSourceResult(
+                source_key=source_key,
+                source_name=connector.source_name + "（离线）",
+                result_type="articles",
+                data={"articles": articles},
+                row_count=len(articles),
+                error=None,
+            )
+    except Exception as exc:
+        logger.debug("[datasource_router] Offline KB fallback error for %s: %s", source_key, exc)
+        return None
+
+
 async def _query_one(
     report_id: int,
     source_key: str,
     query: str,
 ) -> DataSourceResult:
-    """Query a single connector with WS event broadcasting."""
+    """Query a single connector with WS event broadcasting.
+
+    If the connector fails or returns empty results, falls back to offline KB
+    text search (intranet/air-gapped mode).
+    """
     from app.api.ws import broadcast_db_query_start, broadcast_db_query_result, broadcast_db_query_error
 
     connector = get_connector(source_key)
@@ -243,6 +305,18 @@ async def _query_one(
     await broadcast_db_query_start(report_id, source_key, name, query)
     try:
         result = await connector.search(query, limit=8)
+
+        # Offline fallback: if connector returned no data, try offline KB
+        if (result.error or result.row_count == 0) and not result.data:
+            offline_result = await _search_offline_kb_for_source(source_key, query)
+            if offline_result:
+                logger.info("[datasource_router] Using offline KB fallback for %s", source_key)
+                await broadcast_db_query_result(
+                    report_id, source_key, offline_result.source_name,
+                    offline_result.result_type, offline_result.data, offline_result.row_count,
+                )
+                return offline_result
+
         if result.error:
             await broadcast_db_query_error(report_id, source_key, name, result.error)
         else:
@@ -254,6 +328,17 @@ async def _query_one(
     except Exception as exc:
         logger.warning("[datasource_router] Connector %s raised: %s", source_key, exc)
         err = str(exc)
+
+        # Offline fallback on exception
+        offline_result = await _search_offline_kb_for_source(source_key, query)
+        if offline_result:
+            logger.info("[datasource_router] Using offline KB fallback for %s after error", source_key)
+            await broadcast_db_query_result(
+                report_id, source_key, offline_result.source_name,
+                offline_result.result_type, offline_result.data, offline_result.row_count,
+            )
+            return offline_result
+
         await broadcast_db_query_error(report_id, source_key, name, err)
         return DataSourceResult(
             source_key=source_key,

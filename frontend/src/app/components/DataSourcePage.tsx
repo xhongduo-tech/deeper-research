@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Plus, FileSpreadsheet, Database, CheckCircle2, Trash2, RefreshCw,
-  ChevronRight, AlertTriangle, ArrowLeft, Table, Search, X,
+  ChevronRight, AlertTriangle, ArrowLeft, Table, Search, X, Key, Upload, FileText,
 } from "lucide-react";
 import { api, KnowledgeBase, OfficialDataSource } from "../lib/api";
+import { DatabaseQueryCard } from "./DatabaseQueryCard";
 
 /* ── Official source mock data (shown when API is unavailable) ── */
 const OFFICIAL_SOURCES: OfficialDataSource[] = [
@@ -43,8 +44,34 @@ interface KBItem {
   lastUpdated: string;
 }
 
+/* ── Preview API response ── */
+interface PreviewResult {
+  source_key: string;
+  source_name: string;
+  result_type: "table" | "financial" | "articles" | "stats" | "text";
+  data: any;
+  row_count: number;
+  error: string | null;
+  offline: boolean;
+}
+
+/* ── KB Document from API ── */
+interface KBDocument {
+  id: number;
+  filename?: string;
+  original_name?: string;
+  file_type?: string;
+  file_size?: number;
+  chunk_count?: number;
+  status?: string;
+  created_at?: string;
+}
+
 export function DataSourcePage({ sidebarCollapsed }: { sidebarCollapsed?: boolean }) {
   const [tab, setTab] = useState<"official" | "kb">("official");
+  const [drawerSource, setDrawerSource] = useState<OfficialDataSource | null>(null);
+  const [drawerKB, setDrawerKB] = useState<KBItem | null>(null);
+
   const containerStyle = sidebarCollapsed
     ? { paddingLeft: 190, paddingRight: 190 }
     : { paddingLeft: 40, paddingRight: 40, maxWidth: 1060, marginLeft: "auto", marginRight: "auto" };
@@ -82,17 +109,29 @@ export function DataSourcePage({ sidebarCollapsed }: { sidebarCollapsed?: boolea
         ))}
       </div>
 
-      {tab === "official" ? <OfficialTab /> : <KBTab />}
+      {tab === "official"
+        ? <OfficialTab onCardClick={setDrawerSource} />
+        : <KBTab onCardClick={setDrawerKB} />}
 
       <div className="mt-8 text-center" style={{ color: "var(--ink-400)", fontSize: 11 }}>
         2026 大数据应用部 | Brdc.AI人工智能小组
       </div>
+
+      {/* Official source drawer */}
+      {drawerSource && (
+        <OfficialSourceDrawer source={drawerSource} onClose={() => setDrawerSource(null)} />
+      )}
+
+      {/* KB drawer */}
+      {drawerKB && (
+        <KBDrawer kb={drawerKB} onClose={() => setDrawerKB(null)} />
+      )}
     </div>
   );
 }
 
 /* ════════════════════════════════ OFFICIAL TAB ══════════════════════════════ */
-function OfficialTab() {
+function OfficialTab({ onCardClick }: { onCardClick: (src: OfficialDataSource) => void }) {
   const [sources, setSources] = useState<OfficialDataSource[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -166,18 +205,19 @@ function OfficialTab() {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filtered.map((src) => <OfficialSourceCard key={src.key} source={src} />)}
+          {filtered.map((src) => <OfficialSourceCard key={src.key} source={src} onClick={() => onCardClick(src)} />)}
         </div>
       )}
     </div>
   );
 }
 
-function OfficialSourceCard({ source: s }: { source: OfficialDataSource }) {
+function OfficialSourceCard({ source: s, onClick }: { source: OfficialDataSource; onClick: () => void }) {
   return (
     <div
+      onClick={onClick}
       className="rounded-xl p-5 flex flex-col transition hover:-translate-y-0.5"
-      style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", boxShadow: "var(--shadow-xs)", cursor: "default" }}
+      style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", boxShadow: "var(--shadow-xs)", cursor: "pointer" }}
     >
       {/* Icon + name */}
       <div className="flex items-start gap-3 mb-3">
@@ -218,6 +258,204 @@ function OfficialSourceCard({ source: s }: { source: OfficialDataSource }) {
   );
 }
 
+/* ── Official Source Drawer ── */
+function OfficialSourceDrawer({ source: s, onClose }: { source: OfficialDataSource; onClose: () => void }) {
+  const [previewState, setPreviewState] = useState<"loading" | "done" | "error">("loading");
+  const [preview, setPreview] = useState<PreviewResult | null>(null);
+  const [mounted, setMounted] = useState(false);
+
+  // Slide-in animation
+  useEffect(() => {
+    const t = requestAnimationFrame(() => setMounted(true));
+    return () => cancelAnimationFrame(t);
+  }, []);
+
+  // Escape key closes drawer
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  // Load preview when drawer opens
+  useEffect(() => {
+    let alive = true;
+    setPreviewState("loading");
+    setPreview(null);
+
+    const firstQuery = s.sample_queries?.[0] || s.name;
+    api.request<PreviewResult>(`/api/v1/official-sources/${encodeURIComponent(s.key)}/preview?q=${encodeURIComponent(firstQuery)}`)
+      .then((res) => {
+        if (!alive) return;
+        setPreview(res);
+        setPreviewState(res.error ? "error" : "done");
+      })
+      .catch(() => {
+        if (!alive) return;
+        setPreviewState("error");
+      });
+
+    return () => { alive = false; };
+  }, [s.key, s.name, s.sample_queries]);
+
+  const isOffline = previewState === "done" && preview?.offline === true;
+  const hasError = previewState === "error" || (previewState === "done" && preview?.error);
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        onClick={onClose}
+        style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.3)",
+          zIndex: 1000, transition: "opacity 0.2s",
+          opacity: mounted ? 1 : 0,
+        }}
+      />
+      {/* Drawer panel */}
+      <div
+        style={{
+          position: "fixed", right: 0, top: 0, bottom: 0,
+          width: "min(480px, 90vw)",
+          background: "var(--bg-elevated)",
+          borderLeft: "1px solid var(--border)",
+          boxShadow: "-4px 0 32px rgba(0,0,0,0.12)",
+          zIndex: 1001,
+          transform: mounted ? "translateX(0)" : "translateX(100%)",
+          transition: "transform 0.25s cubic-bezier(0.4,0,0.2,1)",
+          display: "flex", flexDirection: "column",
+          overflowY: "auto",
+        }}
+      >
+        {/* Drawer header */}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10, padding: "16px 18px",
+          borderBottom: "1px solid var(--border)", position: "sticky", top: 0,
+          background: "var(--bg-elevated)", zIndex: 1,
+        }}>
+          <div style={{ width: 36, height: 36, borderRadius: 9, background: s.icon_bg, border: `1px solid ${s.icon_color}22`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Database style={{ width: 16, height: 16, color: s.icon_color }} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div style={{ fontWeight: 700, fontSize: 15, color: "var(--ink-900)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</div>
+            <div style={{ fontSize: 12, color: "var(--ink-400)", marginTop: 1 }}>{s.category}</div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{ width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, border: "none", background: "none", cursor: "pointer", color: "var(--ink-400)", flexShrink: 0 }}
+            className="hover:bg-[var(--hover)]"
+          >
+            <X style={{ width: 16, height: 16 }} />
+          </button>
+        </div>
+
+        {/* Drawer body */}
+        <div style={{ flex: 1, padding: "18px 18px 28px", display: "flex", flexDirection: "column", gap: 18 }}>
+          {/* Meta row */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+            <span style={{ fontSize: 12.5, color: "var(--ink-500)" }}>
+              分类：<strong style={{ color: "var(--ink-700)" }}>{s.category}</strong>
+            </span>
+            {s.coverage && (
+              <>
+                <span style={{ color: "var(--border)", fontSize: 12 }}>|</span>
+                <span style={{ fontSize: 12.5, color: "var(--ink-500)" }}>
+                  覆盖：<strong style={{ color: "var(--ink-700)" }}>{s.coverage}</strong>
+                </span>
+              </>
+            )}
+          </div>
+
+          {/* Tags */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {s.domain_tags.map((tag) => (
+              <span key={tag} style={{ fontSize: 11.5, padding: "2px 9px", borderRadius: 999, background: `${s.icon_color}12`, color: s.icon_color, border: `1px solid ${s.icon_color}28`, fontWeight: 500 }}>
+                {tag}
+              </span>
+            ))}
+          </div>
+
+          {/* Availability chip */}
+          <div>
+            {isOffline ? (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 999, background: "rgba(22,163,74,0.1)", color: "#16a34a", fontSize: 12.5, fontWeight: 600, border: "1px solid rgba(22,163,74,0.2)" }}>
+                <CheckCircle2 style={{ width: 13, height: 13 }} /> 离线可用
+              </span>
+            ) : hasError ? (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 999, background: "rgba(217,119,6,0.1)", color: "#d97706", fontSize: 12.5, fontWeight: 600, border: "1px solid rgba(217,119,6,0.2)" }}>
+                <Key style={{ width: 13, height: 13 }} /> 需配置API密钥
+              </span>
+            ) : s.is_active ? (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 999, background: "rgba(22,163,74,0.1)", color: "#16a34a", fontSize: 12.5, fontWeight: 600, border: "1px solid rgba(22,163,74,0.2)" }}>
+                <CheckCircle2 style={{ width: 13, height: 13 }} /> 离线可用
+              </span>
+            ) : (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 999, background: "rgba(217,119,6,0.1)", color: "#d97706", fontSize: 12.5, fontWeight: 600, border: "1px solid rgba(217,119,6,0.2)" }}>
+                <Key style={{ width: 13, height: 13 }} /> 需配置API密钥
+              </span>
+            )}
+          </div>
+
+          {/* Description */}
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-400)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 7 }}>描述</div>
+            <p style={{ fontSize: 13.5, color: "var(--ink-700)", lineHeight: 1.7, margin: 0 }}>{s.description}</p>
+          </div>
+
+          {/* Data preview */}
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-400)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>数据预览</div>
+            {previewState === "loading" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {[...Array(3)].map((_, i) => (
+                  <div key={i} style={{
+                    height: i === 0 ? 40 : 24,
+                    borderRadius: 8,
+                    background: "var(--bg-subtle)",
+                    animation: "drawerPulse 1.4s ease-in-out infinite",
+                    animationDelay: `${i * 0.15}s`,
+                    width: i === 2 ? "70%" : "100%",
+                  }} />
+                ))}
+                <style>{`@keyframes drawerPulse{0%,100%{opacity:1}50%{opacity:0.5}}`}</style>
+              </div>
+            )}
+            {previewState === "done" && preview && !preview.error && (
+              <DatabaseQueryCard
+                sourceKey={s.key}
+                sourceName={s.name}
+                state="done"
+                resultType={preview.result_type}
+                data={preview.data}
+                rowCount={preview.row_count}
+              />
+            )}
+            {(previewState === "error" || (previewState === "done" && preview?.error)) && (
+              <div style={{ padding: "14px 16px", borderRadius: 10, background: "var(--bg-subtle)", border: "1px solid var(--border)", fontSize: 13, color: "var(--ink-500)", lineHeight: 1.6 }}>
+                预览数据加载中，请稍后
+              </div>
+            )}
+          </div>
+
+          {/* Sample queries */}
+          {s.sample_queries && s.sample_queries.length > 0 && (
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-400)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>示例查询</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
+                {s.sample_queries.map((q) => (
+                  <span key={q} style={{ padding: "4px 11px", borderRadius: 999, background: "var(--bg-subtle)", border: "1px solid var(--border)", fontSize: 12.5, color: "var(--ink-600)", cursor: "default" }}>
+                    · {q}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
 function SkeletonCard() {
   return (
     <div className="rounded-xl p-5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", boxShadow: "var(--shadow-xs)" }}>
@@ -235,9 +473,8 @@ function SkeletonCard() {
 }
 
 /* ════════════════════════════════ KB TAB ════════════════════════════════════ */
-function KBTab() {
+function KBTab({ onCardClick }: { onCardClick: (kb: KBItem) => void }) {
   const [kbs, setKbs] = useState<KBItem[]>([]);
-  const [selectedKB, setSelectedKB] = useState<KBItem | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [nameInput, setNameInput] = useState("");
 
@@ -264,10 +501,6 @@ function KBTab() {
   };
 
   const handleDelete = (id: string) => setKbs((prev) => prev.filter((k) => k.id !== id));
-
-  if (selectedKB) {
-    return <KBDetail kb={selectedKB} onBack={() => setSelectedKB(null)} />;
-  }
 
   return (
     <div>
@@ -301,7 +534,7 @@ function KBTab() {
               key={kb.id}
               className="rounded-xl p-5 flex flex-col transition hover:-translate-y-0.5 cursor-pointer group relative overflow-hidden"
               style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", boxShadow: "var(--shadow-xs)" }}
-              onClick={() => setSelectedKB(kb)}
+              onClick={() => onCardClick(kb)}
             >
               <div className="absolute top-0 left-0 right-0 h-0.5 rounded-t-xl" style={{ background: kb.status === "connected" ? "#16a34a" : "#ef4444" }} />
               <div className="flex items-start justify-between mb-3">
@@ -326,7 +559,7 @@ function KBTab() {
               </div>
               <div style={{ fontSize: 12, color: "var(--ink-400)", marginBottom: 12 }}>更新于 {kb.lastUpdated}</div>
               <button
-                onClick={(e) => { e.stopPropagation(); setSelectedKB(kb); }}
+                onClick={(e) => { e.stopPropagation(); onCardClick(kb); }}
                 className="h-9 w-full rounded-lg inline-flex items-center justify-center gap-1.5 mt-auto transition hover:bg-[var(--hover)] text-[13px]"
                 style={{ color: "var(--ink-700)", border: "1px solid var(--border)", fontWeight: 500 }}
               >
@@ -362,7 +595,185 @@ function KBTab() {
   );
 }
 
-/* ── KB Detail: document list + upload ── */
+/* ── KB Drawer ── */
+function KBDrawer({ kb, onClose }: { kb: KBItem; onClose: () => void }) {
+  const [docs, setDocs] = useState<KBDocument[]>([]);
+  const [docsLoading, setDocsLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    const t = requestAnimationFrame(() => setMounted(true));
+    return () => cancelAnimationFrame(t);
+  }, []);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  useEffect(() => {
+    let alive = true;
+    setDocsLoading(true);
+    const kbId = parseInt(kb.id.replace(/\D/g, "")) || 0;
+    if (!kbId) { setDocsLoading(false); return; }
+    api.request<{ documents: KBDocument[]; total: number }>(`/api/kb/${kbId}/documents`)
+      .then((res) => { if (alive) { setDocs(res.documents || []); setDocsLoading(false); } })
+      .catch(() => { if (alive) setDocsLoading(false); });
+    return () => { alive = false; };
+  }, [kb.id]);
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    const kbId = parseInt(kb.id.replace(/\D/g, "")) || 0;
+    try {
+      await api.uploadKBDocument(kbId, file);
+      // Reload docs
+      const res = await api.request<{ documents: KBDocument[]; total: number }>(`/api/kb/${kbId}/documents`);
+      setDocs(res.documents || []);
+    } catch {
+      // Append locally as fallback
+      setDocs((prev) => [...prev, {
+        id: Date.now(),
+        original_name: file.name,
+        file_size: file.size,
+        status: "error",
+        created_at: new Date().toISOString(),
+      }]);
+    } finally {
+      setUploading(false);
+      // Reset input
+      e.target.value = "";
+    }
+  };
+
+  const fmtSize = (bytes?: number) => {
+    if (!bytes) return "—";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1048576) return `${(bytes / 1024).toFixed(0)} KB`;
+    return `${(bytes / 1048576).toFixed(1)} MB`;
+  };
+
+  const fileExt = (name?: string) => {
+    if (!name) return "file";
+    const m = name.match(/\.([^.]+)$/);
+    return m ? m[1].toLowerCase() : "file";
+  };
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        onClick={onClose}
+        style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.3)",
+          zIndex: 1000, transition: "opacity 0.2s",
+          opacity: mounted ? 1 : 0,
+        }}
+      />
+      {/* Drawer panel */}
+      <div
+        style={{
+          position: "fixed", right: 0, top: 0, bottom: 0,
+          width: "min(480px, 90vw)",
+          background: "var(--bg-elevated)",
+          borderLeft: "1px solid var(--border)",
+          boxShadow: "-4px 0 32px rgba(0,0,0,0.12)",
+          zIndex: 1001,
+          transform: mounted ? "translateX(0)" : "translateX(100%)",
+          transition: "transform 0.25s cubic-bezier(0.4,0,0.2,1)",
+          display: "flex", flexDirection: "column",
+        }}
+      >
+        {/* Header */}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10, padding: "16px 18px",
+          borderBottom: "1px solid var(--border)",
+          background: "var(--bg-elevated)",
+        }}>
+          <div style={{ width: 36, height: 36, borderRadius: 9, background: "var(--brand-soft)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Database style={{ width: 16, height: 16, color: "var(--brand)" }} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div style={{ fontWeight: 700, fontSize: 15, color: "var(--ink-900)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{kb.name}</div>
+            <div style={{ fontSize: 12, color: "var(--ink-400)", marginTop: 1 }}>{kb.type} · {kb.docCount} 个文档</div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{ width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, border: "none", background: "none", cursor: "pointer", color: "var(--ink-400)", flexShrink: 0 }}
+            className="hover:bg-[var(--hover)]"
+          >
+            <X style={{ width: 16, height: 16 }} />
+          </button>
+        </div>
+
+        {/* Upload button */}
+        <div style={{ padding: "12px 18px", borderBottom: "1px solid var(--border)" }}>
+          <label style={{
+            display: "inline-flex", alignItems: "center", gap: 6,
+            height: 36, padding: "0 14px", borderRadius: 9,
+            background: "var(--ink-900)", color: "#fff", fontWeight: 600, fontSize: 13, cursor: "pointer",
+          }}>
+            {uploading ? <RefreshCw style={{ width: 14, height: 14, animation: "spin 1s linear infinite" }} /> : <Upload style={{ width: 14, height: 14 }} />}
+            上传文档
+            <input type="file" style={{ display: "none" }} onChange={handleUpload} accept=".pdf,.docx,.txt,.md,.csv,.xlsx" />
+          </label>
+          <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
+        </div>
+
+        {/* Document list */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
+          {docsLoading ? (
+            [...Array(4)].map((_, i) => (
+              <div key={i} style={{ height: 56, borderRadius: 10, background: "var(--bg-subtle)", animation: "drawerPulse 1.4s ease-in-out infinite", animationDelay: `${i * 0.12}s` }} />
+            ))
+          ) : docs.length === 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px 0", gap: 10 }}>
+              <FileText style={{ width: 32, height: 32, color: "var(--ink-300)" }} />
+              <p style={{ color: "var(--ink-400)", fontSize: 13.5 }}>暂无文档，上传后可用于 RAG 检索</p>
+            </div>
+          ) : (
+            docs.map((doc) => {
+              const name = doc.original_name || doc.filename || "未知文件";
+              const ext = fileExt(name);
+              const status = doc.status || "ready";
+              return (
+                <div key={doc.id} style={{
+                  display: "flex", alignItems: "center", gap: 12,
+                  padding: "10px 14px", borderRadius: 10,
+                  background: "var(--bg-subtle)", border: "1px solid var(--border)",
+                }}>
+                  <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--bg-elevated)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <FileText style={{ width: 14, height: 14, color: "var(--ink-400)" }} />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: "var(--ink-900)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
+                    <div style={{ fontSize: 11.5, color: "var(--ink-400)", marginTop: 2, display: "flex", gap: 8 }}>
+                      <span>{ext.toUpperCase()}</span>
+                      <span>{fmtSize(doc.file_size)}</span>
+                      {doc.chunk_count != null && <span>{doc.chunk_count} 块</span>}
+                      {doc.created_at && <span>{new Date(doc.created_at).toLocaleDateString("zh-CN")}</span>}
+                    </div>
+                  </div>
+                  {status === "ready" || status === "indexed" || status === "completed"
+                    ? <CheckCircle2 style={{ width: 15, height: 15, color: "#16a34a", flexShrink: 0 }} />
+                    : status === "error"
+                      ? <AlertTriangle style={{ width: 15, height: 15, color: "#ef4444", flexShrink: 0 }} />
+                      : <RefreshCw style={{ width: 15, height: 15, color: "var(--brand)", flexShrink: 0, animation: "spin 1s linear infinite" }} />}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ── KB Detail: document list + upload (legacy full-page view, kept for back-compat) ── */
 function KBDetail({ kb, onBack }: { kb: KBItem; onBack: () => void }) {
   const [docs, setDocs] = useState<{ id: string; name: string; size: string; status: string; date: string }[]>([]);
   const [uploading, setUploading] = useState(false);

@@ -844,6 +844,40 @@ OFFICIAL_SOURCES: list[dict] = [
 ]
 
 
+# ── Source capability metadata ──────────────────────────────────────────────
+# Classifies each source: requires_api_key, api_key_name, offline_available.
+#
+# Real API connectors we built (free/open APIs):
+#   arxiv, worldbank, weather, wikipedia, stats_cn, news_rss → requires_api_key=False
+# Commercial sources & others → requires_api_key=True
+# All sources have offline_available=True (mock/pre-loaded offline data)
+
+# Sources with free/open API connectors (no commercial API key needed)
+_FREE_API_SOURCES = {
+    "acad_arxiv", "intl_worldbank", "env_weather_cn", "acad_pubmed",
+    "intl_imf", "intl_un_stats",
+}
+# These keys match "news_*" prefix → news_rss connector (free RSS feeds)
+_NEWS_RSS_PREFIX = "news_"
+
+
+def _get_source_meta(key: str) -> dict:
+    """Return requires_api_key / api_key_name / offline_available for a source key."""
+    if key in _FREE_API_SOURCES or key.startswith(_NEWS_RSS_PREFIX):
+        return {
+            "requires_api_key": False,
+            "api_key_name": "",
+            "offline_available": True,
+        }
+    # Commercial or no-connector sources
+    key_upper = key.upper()
+    return {
+        "requires_api_key": True,
+        "api_key_name": f"DATASOURCE_{key_upper}_API_KEY",
+        "offline_available": True,
+    }
+
+
 async def init_official_sources(db: AsyncSession) -> None:
     """Seed the official_datasources table from the static list.
 
@@ -860,6 +894,7 @@ async def init_official_sources(db: AsyncSession) -> None:
         for src in OFFICIAL_SOURCES:
             if src["key"] in existing_keys:
                 continue
+            meta = _get_source_meta(src["key"])
             row = OfficialDataSource(
                 key=src["key"],
                 name=src["name"],
@@ -874,6 +909,9 @@ async def init_official_sources(db: AsyncSession) -> None:
                 sample_queries=json.dumps(src.get("sample_queries", []), ensure_ascii=False),
                 coverage=src.get("coverage", "2020-至今"),
                 doc_count=src.get("doc_count", 0),
+                requires_api_key=src.get("requires_api_key", meta["requires_api_key"]),
+                api_key_name=src.get("api_key_name", meta["api_key_name"]),
+                offline_available=src.get("offline_available", meta["offline_available"]),
             )
             db.add(row)
             new_rows += 1

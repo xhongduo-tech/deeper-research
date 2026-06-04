@@ -27,3 +27,10 @@ class OfficialDataSource(Base):
     doc_count = Column(Integer, default=0)
     last_synced_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # ── Offline / API-key capability fields ─────────────────────────────────
+    requires_api_key = Column(Boolean, default=False)   # needs external API key to function
+    api_key_name = Column(String(100), default="")       # e.g. "TONGHUASHUN_API_KEY"
+    api_key_value = Column(Text, default="")             # stored value (admin sets this)
+    offline_available = Column(Boolean, default=False)   # has pre-loaded offline data
+    offline_doc_count = Column(Integer, default=0)       # how many offline chunks loaded
