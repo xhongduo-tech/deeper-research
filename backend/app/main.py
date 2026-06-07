@@ -10,13 +10,16 @@ from app.config import settings
 from app.database import engine, async_session, Base, run_migrations
 from app import models  # noqa: F401
 from app.api import auth, reports, agents, files, messages, system, ws, dashboard, prompt_skills, chat
-from app.api import admin, swarm
+from app.api import admin
 from app.api import knowledge_base
+from app.api import ingress as ingress_api
+from app.api import compute as compute_api
+from app.api import admin_bulk
 from app.api import ontology, sentiment
 from app.api import html_report
-from app.api import lab as lab_api
 from app.api import official_sources
 from app.api import admin_datasources
+from app.api import kb_coverage
 from app.services.auth_service import ensure_admin_user
 from app.skills import register_all_skills
 
@@ -92,8 +95,9 @@ app.include_router(prompt_skills.router)
 app.include_router(ontology.router)
 app.include_router(sentiment.router)
 app.include_router(html_report.router)
-app.include_router(lab_api.router)
 app.include_router(official_sources.router)
 app.include_router(admin_datasources.router)
-# Swarm router disabled — simplified pipeline no longer uses multi-agent swarm
-# app.include_router(swarm.router)
+app.include_router(kb_coverage.router)
+app.include_router(ingress_api.router)
+app.include_router(compute_api.router)
+app.include_router(admin_bulk.router)

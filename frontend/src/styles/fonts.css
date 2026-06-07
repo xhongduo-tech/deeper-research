@@ -1,0 +1,86 @@
+:root {
+  /* Typography */
+  --font-sans:
+    'Inter', 'Noto Sans SC', 'PingFang SC', 'HarmonyOS Sans SC',
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei',
+    Arial, sans-serif;
+  --font-mono:
+    'JetBrains Mono', 'SF Mono', SFMono-Regular, Menlo, Monaco,
+    Consolas, 'Liberation Mono', monospace;
+
+  /* Surface palette — warm ink */
+  --bg: #fbfaf7;
+  --bg-elevated: #ffffff;
+  --bg-sidebar: #f5f3ee;
+  --bg-subtle: #f0eee7;
+  --border: #ebe8e0;
+  --border-strong: #d9d4c8;
+  --hover: rgba(15, 14, 12, 0.04);
+
+  /* Text */
+  --ink-900: #0f0e0c;
+  --ink-700: #2c2a25;
+  --ink-500: #6e6a5f;
+  --ink-400: #9a958a;
+  --ink-300: #b8b3a6;
+
+  /* Brand */
+  --brand: #5b4ee8;
+  --brand-hover: #4a3fd1;
+  --brand-soft: rgba(91, 78, 232, 0.08);
+  --brand-border: rgba(91, 78, 232, 0.22);
+  --brand-gradient: linear-gradient(135deg, #5b4ee8 0%, #8b5cf6 50%, #ec4899 100%);
+
+  /* Shadows */
+  --shadow-xs: 0 1px 2px rgba(15, 14, 12, 0.04);
+  --shadow-sm: 0 2px 6px -1px rgba(15, 14, 12, 0.06), 0 1px 2px rgba(15, 14, 12, 0.04);
+  --shadow-md: 0 8px 20px -6px rgba(15, 14, 12, 0.08), 0 2px 6px rgba(15, 14, 12, 0.04);
+  --shadow-lg: 0 16px 40px -12px rgba(15, 14, 12, 0.12), 0 4px 12px rgba(15, 14, 12, 0.04);
+  --shadow-brand: 0 12px 32px -8px rgba(91, 78, 232, 0.22);
+}
+
+html,
+body,
+button,
+input,
+textarea,
+select {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: 'cv11', 'ss01', 'ss03', 'kern';
+  color: var(--ink-900);
+}
+
+h1 { font-weight: 700; letter-spacing: -0.03em; line-height: 1.1; }
+h2 { font-weight: 700; letter-spacing: -0.025em; line-height: 1.2; }
+h3 { font-weight: 650; letter-spacing: -0.02em; line-height: 1.3; }
+h4, h5, h6 { font-weight: 600; letter-spacing: -0.015em; line-height: 1.4; }
+
+code, pre, kbd, samp {
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0;
+}
+
+/* Refined scrollbar */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+*:hover::-webkit-scrollbar-thumb { background: rgba(15, 14, 12, 0.15); background-clip: padding-box; }
+
+/* Subtle focus ring */
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+::selection { background: var(--brand-soft); color: var(--ink-900); }

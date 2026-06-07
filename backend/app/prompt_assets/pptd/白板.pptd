@@ -1,0 +1,13 @@
+name: 白板
+category: 极简优雅
+palette: white background, blue accent, graphite text, light gray panels
+typography: clean sans serif, compact headings, spacious body text
+layouts:
+  - sketch-to-reality cover
+  - simple framework diagram
+  - issue tree
+  - annotated table
+  - next-step checklist
+content_rules:
+  - use this file only for visual style
+  - do not use demo product-planning content

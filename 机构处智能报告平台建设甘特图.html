@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>机构处智能报告平台 · 建设甘特图（周视图）</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: #f1f5f9;
+  color: #1e293b;
+  min-height: 100vh;
+}
+
+/* ── Header ── */
+.hdr {
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  color: white;
+  padding: 22px 36px 18px;
+  border-bottom: 3px solid #3b82f6;
+}
+.hdr h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.4px; }
+.hdr .sub { font-size: 12px; color: #94a3b8; margin-top: 3px; }
+.hdr-chips { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.chip {
+  display: flex; align-items: center; gap: 5px;
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.11);
+  border-radius: 5px; padding: 3px 9px;
+  font-size: 11px; color: #cbd5e1;
+}
+.chip .d { width: 6px; height: 6px; border-radius: 50%; }
+
+/* ── Legend ── */
+.legend {
+  background: white; border-bottom: 1px solid #e2e8f0;
+  padding: 10px 36px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.legend .lbl { font-size: 11px; color: #64748b; font-weight: 600; margin-right: 2px; }
+.li { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #475569; }
+.sw { width: 20px; height: 8px; border-radius: 3px; }
+.sep { width: 1px; height: 14px; background: #e2e8f0; margin: 0 6px; }
+
+/* ── Chart wrapper ── */
+.wrap { padding: 24px 36px 40px; overflow-x: auto; }
+
+/* ── Gantt table ── */
+.gantt {
+  min-width: 1100px;
+  background: white;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 6px rgba(0,0,0,0.06);
+  overflow: hidden;
+}
+
+/* column grid: label(200px) + 9 week cols */
+.g-row {
+  display: grid;
+  grid-template-columns: 210px repeat(9, 1fr);
+  border-bottom: 1px solid #f1f5f9;
+}
+.g-row:last-child { border-bottom: none; }
+
+/* Week header */
+.week-hdr {
+  background: #f8fafc;
+  border-bottom: 2px solid #e2e8f0;
+}
+.week-hdr .lc {
+  padding: 10px 14px;
+  font-size: 11px; font-weight: 600; color: #64748b;
+  border-right: 1px solid #e2e8f0;
+  display: flex; align-items: center;
+}
+.wc {
+  padding: 7px 0; text-align: center;
+  font-size: 11px; font-weight: 700; color: #64748b;
+  border-right: 1px solid #e2e8f0;
+  line-height: 1.4;
+}
+.wc:last-child { border-right: none; }
+.wc.now { color: #ef4444; background: #fef2f2; }
+.wc .wdate { font-size: 10px; font-weight: 400; color: #94a3b8; }
+
+/* Track header row */
+.track-hdr {
+  border-bottom: 1px solid #e2e8f0;
+}
+.track-hdr .tc {
+  padding: 8px 14px;
+  font-size: 12px; font-weight: 700; color: white;
+  border-right: 1px solid rgba(255,255,255,0.15);
+  display: flex; align-items: center; gap: 7px;
+  letter-spacing: 0.2px;
+}
+.track-hdr .timeline-area {
+  grid-column: 2 / -1;
+  position: relative;
+  display: flex; align-items: center;
+  padding: 5px 0;
+}
+
+/* Task row */
+.task-row { transition: background 0.1s; }
+.task-row:hover { background: #f8fafc; }
+.task-label {
+  padding: 4px 14px 4px 26px;
+  font-size: 11.5px; color: #475569;
+  border-right: 1px solid #e2e8f0;
+  display: flex; align-items: center; gap: 5px;
+  line-height: 1.35;
+  min-height: 32px;
+}
+.task-label .sdot {
+  width: 5px; height: 5px; border-radius: 50%;
+  flex-shrink: 0; margin-top: 1px;
+}
+.task-timeline {
+  grid-column: 2 / -1;
+  position: relative;
+  height: 32px;
+}
+/* week separator lines inside timeline */
+.task-timeline::before {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0; left: 0; right: 0;
+  background: repeating-linear-gradient(
+    to right,
+    transparent 0,
+    transparent calc(100%/9 - 1px),
+    #f1f5f9 calc(100%/9 - 1px),
+    #f1f5f9 calc(100%/9)
+  );
+  pointer-events: none;
+}
+
+/* Bar */
+.bar {
+  position: absolute;
+  top: 50%; transform: translateY(-50%);
+  height: 17px;
+  border-radius: 4px;
+  display: flex; align-items: center;
+  padding: 0 7px;
+  font-size: 10px; font-weight: 600; color: white;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: default;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.18);
+  transition: filter 0.12s, transform 0.12s;
+  z-index: 2;
+}
+.bar:hover {
+  filter: brightness(1.1);
+  transform: translateY(-50%) scaleY(1.12);
+  z-index: 10;
+}
+.bar-active { animation: bpulse 2.8s ease-in-out infinite; }
+@keyframes bpulse {
+  0%,100% { box-shadow: 0 1px 3px rgba(0,0,0,0.18); }
+  50%      { box-shadow: 0 2px 10px rgba(59,130,246,0.5); }
+}
+.bar-plan { opacity: 0.62; }
+
+/* progress fill */
+.bprog {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: rgba(255,255,255,0.25);
+  border-radius: 4px; pointer-events: none;
+}
+
+/* Today line */
+.today-line {
+  position: absolute;
+  top: 0; bottom: 0; width: 2px;
+  background: #ef4444; z-index: 20; pointer-events: none;
+}
+.today-line::after {
+  content: 'TODAY';
+  position: absolute; top: -16px; left: 50%;
+  transform: translateX(-50%);
+  font-size: 8px; font-weight: 800;
+  color: #ef4444; letter-spacing: 0.5px;
+}
+
+/* Milestone diamond */
+.milestone {
+  position: absolute;
+  top: 50%; transform: translateY(-50%) rotate(45deg);
+  width: 10px; height: 10px;
+  z-index: 5; cursor: default;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+}
+
+/* Summary row */
+.summary-row {
+  padding: 6px 14px 6px 26px;
+  background: #f8fafc;
+  border-top: 2px solid #e2e8f0;
+  display: grid;
+  grid-template-columns: 210px repeat(9, 1fr);
+}
+.summary-row .slabel {
+  font-size: 11px; color: #64748b; font-weight: 600;
+  display: flex; align-items: center;
+}
+.summary-row .scell {
+  font-size: 10.5px; color: #94a3b8; text-align: center;
+  display: flex; align-items: center; justify-content: center;
+  border-left: 1px dashed #e2e8f0;
+  padding: 2px 0;
+}
+
+/* Tooltip */
+.tip {
+  display: none; position: fixed; z-index: 999;
+  background: #1e293b; color: white;
+  border-radius: 7px; padding: 9px 13px;
+  font-size: 11.5px; line-height: 1.6;
+  max-width: 240px; pointer-events: none;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+}
+.tip.on { display: block; }
+.tip-title { font-weight: 700; font-size: 12.5px; margin-bottom: 4px; }
+.tip-row { display: flex; justify-content: space-between; gap: 12px; }
+.tip-k { color: #94a3b8; }
+.tip-v { font-weight: 600; }
+.tip-note { margin-top: 5px; color: #94a3b8; font-size: 10.5px; line-height: 1.5; }
+
+/* ── Stats cards ── */
+.stats { padding: 0 36px 36px; display: flex; gap: 14px; flex-wrap: wrap; }
+.sc {
+  background: white; border-radius: 8px;
+  border: 1px solid #e2e8f0; padding: 14px 18px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  min-width: 150px;
+}
+.sc .lbl { font-size: 10px; color: #94a3b8; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; }
+.sc .val { font-size: 26px; font-weight: 800; color: #1e293b; }
+.sc .sub { font-size: 11px; color: #64748b; margin-top: 1px; }
+
+/* ── Key challenges ── */
+.challenges { padding: 0 36px 40px; }
+.challenges h3 { font-size: 14px; font-weight: 700; margin-bottom: 12px; color: #1e293b; }
+.cg { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.cc {
+  background: white; border-radius: 8px;
+  border-left: 4px solid;
+  border-top: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0;
+  padding: 11px 14px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+.cc .ct { font-size: 12.5px; font-weight: 700; color: #1e293b; margin-bottom: 3px; }
+.cc .cb { font-size: 11px; color: #64748b; line-height: 1.5; }
+.cc .ctag {
+  display: inline-block; border-radius: 3px;
+  padding: 1px 5px; font-size: 9px; font-weight: 800;
+  margin-bottom: 5px; letter-spacing: 0.3px;
+}
+</style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<div class="hdr">
+  <h1>机构处智能报告平台 · 建设规划甘特图（周视图）</h1>
+  <div class="sub">DataAgent Studio &nbsp;·&nbsp; 2026-06-05 ~ 2026-08-07 &nbsp;·&nbsp; 共 9 周 · 6大并行攻关方向</div>
+  <div class="hdr-chips">
+    <div class="chip"><span class="d" style="background:#3b82f6"></span>进行中</div>
+    <div class="chip"><span class="d" style="background:#f59e0b"></span>规划推进中</div>
+    <div class="chip"><span class="d" style="background:#ef4444"></span>TODAY 2026-06-05</div>
+    <div class="chip">知识库/KG/本体论持续迭代 V2</div>
+    <div class="chip">每周 4-5 项核心任务并行</div>
+    <div class="chip">21 Skills 已注册 · 目标 35+</div>
+  </div>
+</div>
+
+<!-- ── Legend ── -->
+<div class="legend">
+  <span class="lbl">技术方向：</span>
+  <div class="li"><div class="sw" style="background:#3b82f6"></div>前端V5</div>
+  <div class="li"><div class="sw" style="background:#0d9488"></div>知识库&RAG V2</div>
+  <div class="li"><div class="sw" style="background:#7c3aed"></div>知识图谱 V2</div>
+  <div class="li"><div class="sw" style="background:#c026d3"></div>本体论 V2</div>
+  <div class="li"><div class="sw" style="background:#dc2626"></div>质量保障</div>
+  <div class="li"><div class="sw" style="background:#d97706"></div>基础设施</div>
+  <div class="sep"></div>
+  <div class="li"><div class="sw" style="background:#f59e0b; opacity:.55"></div>规划中</div>
+  <div class="li"><div class="sw" style="background:#3b82f6"></div>进行中</div>
+  <div class="sep"></div>
+  <span class="lbl">◆ 里程碑</span>
+</div>
+
+<!-- ── Main Chart ── -->
+<div class="wrap">
+  <div class="gantt" id="ganttRoot"></div>
+</div>
+
+<!-- ── Stats ── -->
+<div class="stats">
+  <div class="sc">
+    <div class="lbl">建设周期</div>
+    <div class="val">9周</div>
+    <div class="sub">2026/6/5 — 8/7</div>
+  </div>
+  <div class="sc">
+    <div class="lbl">并行方向</div>
+    <div class="val">6</div>
+    <div class="sub">同步推进，无串行等待</div>
+  </div>
+  <div class="sc">
+    <div class="lbl">核心任务数</div>
+    <div class="val">34</div>
+    <div class="sub">跨6大技术方向</div>
+  </div>
+  <div class="sc">
+    <div class="lbl">周均并行任务</div>
+    <div class="val">~5</div>
+    <div class="sub">每周同时推进项</div>
+  </div>
+  <div class="sc">
+    <div class="lbl">关键里程碑</div>
+    <div class="val">3</div>
+    <div class="sub">W5 中期检查 / W8 V2完成 / W9 验收</div>
+  </div>
+  <div class="sc">
+    <div class="lbl">Skills目标</div>
+    <div class="val">35+</div>
+    <div class="sub">当前21个已注册</div>
+  </div>
+</div>
+
+<!-- ── Key Challenges ── -->
+<div class="challenges">
+  <h3>本阶段核心技术攻关重点</h3>
+  <div class="cg">
+    <div class="cc" style="border-color:#ef4444">
+      <div class="ctag" style="background:#fef2f2;color:#ef4444">高优 · 架构决策</div>
+      <div class="ct">Graph-RAG 与向量检索的融合权重</div>
+      <div class="cb">图谱引导检索 vs 纯向量召回 A/B评测。W3前需确定融合策略（RRF/加权），防止稀疏图节点拉低召回率。</div>
+    </div>
+    <div class="cc" style="border-color:#ef4444">
+      <div class="ctag" style="background:#fef2f2;color:#ef4444">高优 · 专家依赖</div>
+      <div class="ct">本体论对齐 — 机构概念歧义消解</div>
+      <div class="cb">机构业务概念与OWL/SKOS存在大量命名歧义，W3前需安排领域专家访谈，输出初稿本体树，否则后续对齐无法启动。</div>
+    </div>
+    <div class="cc" style="border-color:#f59e0b">
+      <div class="ctag" style="background:#fffbeb;color:#d97706">中优 · 接口约束</div>
+      <div class="ct">前端V5 — Wizard多步骤状态管理</div>
+      <div class="cb">报告创作向导需后端新增 step-session API。W1必须先定义OpenAPI Spec，否则前后端并行开发会产生接口漂移，W4后再改代价高。</div>
+    </div>
+    <div class="cc" style="border-color:#f59e0b">
+      <div class="ctag" style="background:#fffbeb;color:#d97706">中优 · 内网约束</div>
+      <div class="ct">多模态 — 视觉模型内网可用性</div>
+      <div class="cb">PDF图表理解依赖多模态模型。W3前需完成qwen2.5-VL或LLaVA的内网部署可行性评估，若不可行需在W4前切换至OCR+规则方案。</div>
+    </div>
+    <div class="cc" style="border-color:#3b82f6">
+      <div class="ctag" style="background:#eff6ff;color:#2563eb">已就绪 · 待接入</div>
+      <div class="ct">矛盾检测 — 接入报告生成后管道</div>
+      <div class="cb">ContradictionDetectorSkill 已完成（21技能之一）。本阶段核心是打通「生成→检测→修订」闭环，目标W4完成端到端集成测试。</div>
+    </div>
+    <div class="cc" style="border-color:#0d9488">
+      <div class="ctag" style="background:#f0fdfa;color:#0d9488">持续迭代</div>
+      <div class="ct">知识库分块策略 — 语义 vs 固定窗口</div>
+      <div class="cb">语义感知分块（句子边界+重叠窗口）vs 当前固定分块的A/B评测。W3前出实验数据，以F1/MRR决策是否全量切换，避免后期大规模重嵌入。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Tooltip ── -->
+<div class="tip" id="tip"></div>
+
+<script>
+// ─── Config ───────────────────────────────────────────────────────────────
+// 9 weeks: W1=Jun5, W2=Jun12, ..., W9=Jul31, end=Aug7
+// Positions: 1.0=W1, 2.0=W2, ..., 10.0=Aug7 end
+const TOTAL_WEEKS = 9;
+
+const WEEK_HEADERS = [
+  { label: 'W1', date: '6/5' },
+  { label: 'W2', date: '6/12' },
+  { label: 'W3', date: '6/19' },
+  { label: 'W4', date: '6/26' },
+  { label: 'W5', date: '7/3' },
+  { label: 'W6', date: '7/10' },
+  { label: 'W7', date: '7/17' },
+  { label: 'W8', date: '7/24' },
+  { label: 'W9', date: '7/31' },
+];
+
+// Today = W1 start = position 1.0
+const TODAY_POS = 1.0;
+
+function pct(pos) {
+  return ((pos - 1) / TOTAL_WEEKS * 100).toFixed(3) + '%';
+}
+function widthPct(s, e) {
+  return ((e - s) / TOTAL_WEEKS * 100).toFixed(3) + '%';
+}
+
+// ─── Track & Task Data ────────────────────────────────────────────────────
+const TRACKS = [
+  {
+    id: 'fe',
+    label: '前端 V5 重构',
+    color: '#2563eb',
+    bg: '#1d4ed8',
+    tasks: [
+      { name: '新API契约设计 (OpenAPI Spec)', s: 1.0, e: 2.0, status: 'active',
+        note: '先定义Wizard多步骤session接口 + 差异对比接口，防前后端漂移' },
+      { name: '设计系统 Design Token 统一', s: 1.0, e: 2.5, status: 'active',
+        note: '抽取颜色/字体/间距Token到css变量，统一shadcn组件样式' },
+      { name: '报告创作向导 Wizard UI', s: 2.0, e: 5.0, status: 'plan',
+        note: '步骤：选模板→配置参数→知识库选取→生成→审核，5步流程' },
+      { name: '报告预览 & 版本差异视图', s: 3.0, e: 5.5, status: 'plan',
+        note: 'MD/HTML/DOCX切换预览，段落级diff高亮，旧版本对比' },
+      { name: '移动端响应式适配', s: 5.5, e: 7.0, status: 'plan',
+        note: 'Breakpoint≥768px，侧边栏抽屉模式，触控友好交互' },
+      { name: 'V5 联调测试 & 发布', s: 7.0, e: 9.0, status: 'plan',
+        note: '端到端功能测试，回归检查，内网部署验证' },
+    ],
+    milestones: [
+      { pos: 9.0, label: 'V5发布', color: '#2563eb' }
+    ]
+  },
+  {
+    id: 'kb',
+    label: '知识库 & RAG — 持续迭代 V2',
+    color: '#0d9488',
+    bg: '#0f766e',
+    tasks: [
+      { name: '语义分块策略实验（句子边界感知）', s: 1.0, e: 3.0, status: 'active',
+        note: '对比固定分块 vs 语义分块，建A/B评测框架，F1/MRR为判定指标' },
+      { name: 'A/B评测框架 & 基线数据集', s: 1.5, e: 3.0, status: 'active',
+        note: '用机构历史问答对构建评测集，自动化跑召回指标' },
+      { name: '增量向量更新机制', s: 3.0, e: 5.0, status: 'plan',
+        note: '文档哈希diff，只对变更chunk重嵌入，避免全量重算' },
+      { name: 'Multi-KB融合检索（RRF倒数排名）', s: 4.5, e: 6.5, status: 'plan',
+        note: '跨多个知识库检索融合，支持权重配置，防领域污染' },
+      { name: '知识质量评估指标体系', s: 6.0, e: 8.0, status: 'plan',
+        note: '覆盖率/一致性/时效衰减，扩展已有KB Coverage API' },
+      { name: '时效衰减权重 & RAG调优', s: 7.5, e: 9.5, status: 'plan',
+        note: '文档时间戳→衰减系数注入排序，旧文档自动降权' },
+    ],
+    milestones: [
+      { pos: 8.5, label: 'KB V2完成', color: '#0d9488' }
+    ]
+  },
+  {
+    id: 'kg',
+    label: '知识图谱 — 持续迭代 V2 & Graph-RAG',
+    color: '#7c3aed',
+    bg: '#6d28d9',
+    tasks: [
+      { name: 'Graph-RAG 架构设计 & POC', s: 1.0, e: 2.5, status: 'active',
+        note: '节点邻域扩展→候选文本→Re-rank，POC验证召回质量' },
+      { name: '图谱引导检索实现（与向量检索并行）', s: 2.5, e: 5.0, status: 'plan',
+        note: '接入现有RAG管道，A/B与纯向量检索对比，输出融合策略' },
+      { name: 'KG可视化编辑器（节点/关系CRUD）', s: 3.5, e: 5.5, status: 'plan',
+        note: '前端拖拽编辑，后端PATCH /api/ontology/node|edge，支持批量修改' },
+      { name: '跨文档图谱融合 & 实体去重', s: 5.0, e: 7.0, status: 'plan',
+        note: '别名聚类（aliases字段已有），边权置信度合并，去重后实体对齐' },
+      { name: 'KG与报告生成深度联动', s: 6.5, e: 8.0, status: 'plan',
+        note: '自动插入KG洞察节点到报告Section，标注图谱来源' },
+      { name: 'Graph-RAG A/B评测 & 合并决策', s: 8.0, e: 9.5, status: 'plan',
+        note: '综合F1/延迟/用户满意度决策是否全量替换，输出合并策略文档' },
+    ],
+    milestones: [
+      { pos: 8.5, label: 'KG V2完成', color: '#7c3aed' }
+    ]
+  },
+  {
+    id: 'onto',
+    label: '本体论 — 持续迭代 V2 & 领域对齐',
+    color: '#c026d3',
+    bg: '#a21caf',
+    tasks: [
+      { name: '机构业务本体初稿建模（访谈驱动）', s: 1.0, e: 3.0, status: 'active',
+        note: '结合领域专家访谈，识别核心概念层级，映射到DomainSchema' },
+      { name: 'OWL/SKOS方言映射表', s: 2.0, e: 4.0, status: 'plan',
+        note: 'SKOS方言映射 + 名称歧义消解规则，高风险概念打标红' },
+      { name: '领域专家校验工作流（Admin模块）', s: 3.5, e: 5.5, status: 'plan',
+        note: '管理后台新增"本体审核"任务流，标注→确认→入库闭环' },
+      { name: '本体版本控制机制', s: 5.0, e: 6.5, status: 'plan',
+        note: '版本快照 + diff，支持回滚，与DomainSchema版本号绑定' },
+      { name: '跨领域概念对齐 & 推理', s: 5.5, e: 7.5, status: 'plan',
+        note: '金融/科技/制造跨领域推断，OWL属性链 + SPARQL查询接口' },
+      { name: '本体驱动的报告结构推断', s: 7.5, e: 9.5, status: 'plan',
+        note: '根据报告领域自动推断章节结构，优于硬编码模板规则' },
+    ],
+    milestones: [
+      { pos: 8.5, label: '本体V2完成', color: '#c026d3' }
+    ]
+  },
+  {
+    id: 'qa',
+    label: '报告质量保障体系',
+    color: '#dc2626',
+    bg: '#b91c1c',
+    tasks: [
+      { name: '矛盾检测接入报告生成后管道', s: 1.5, e: 4.0, status: 'active',
+        note: 'ContradictionDetectorSkill已就绪，打通生成→检测→修订闭环，W4完成集成测试' },
+      { name: '证据溯源 & 引用管理（chunk追踪）', s: 3.0, e: 5.5, status: 'plan',
+        note: '段落标注KB来源chunk_id，前端"查看原文"跳转，EvidenceRecord扩展' },
+      { name: '论证强度评分集成（Toulmin实时应用）', s: 5.0, e: 7.0, status: 'plan',
+        note: 'ArgumentMiningSkill报告完成后自动评分，低于阈值段落标红警告' },
+      { name: 'QA仪表板（质量维度历史趋势）', s: 7.0, e: 9.0, status: 'plan',
+        note: '各报告质量维度趋势图，矛盾/论证弱项段落高亮定位' },
+    ],
+    milestones: []
+  },
+  {
+    id: 'infra',
+    label: '基础设施 & 多模态增强',
+    color: '#d97706',
+    bg: '#b45309',
+    tasks: [
+      { name: 'PDF结构化解析（表格/图表精准提取）', s: 1.0, e: 3.5, status: 'active',
+        note: 'pdfminer结构分析 + 表格区域识别，输出结构化JSON，接入文档解析管道' },
+      { name: '离线包完整打包优化（build_offline.sh）', s: 1.5, e: 3.0, status: 'active',
+        note: 'linux/amd64镜像 + 模型文件 + 61个领域种子数据一键包，测试离线冷启动' },
+      { name: '多模态模型可行性评估（内网约束）', s: 2.5, e: 4.5, status: 'plan',
+        note: '评估qwen2.5-VL vs LLaVA内网部署，若不可行W4前切换OCR+规则方案' },
+      { name: '并发Agent异步流水线优化', s: 4.0, e: 6.0, status: 'plan',
+        note: 'PlannerAgent后并行多个ResearchAgent实例，降低端到端时延' },
+      { name: '批量报告处理（Redis优先级队列）', s: 6.0, e: 7.5, status: 'plan',
+        note: '优先级调度，进度推送，支持批量提交+单任务取消' },
+      { name: '压力测试 & 稳定性验证（全系统）', s: 8.5, e: 9.5, status: 'plan',
+        note: '并发10用户，P95延迟<30s，72h无崩溃，MTTR/MTTF指标记录' },
+    ],
+    milestones: [
+      { pos: 9.5, label: '全系统验收', color: '#d97706' }
+    ]
+  },
+];
+
+// ─── Helpers (must precede render loop) ──────────────────────────────────
+function el(tag, cls) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  return e;
+}
+
+const TRACK_ICONS = { fe: '⬡', kb: '◈', kg: '⬡', onto: '◉', qa: '◆', infra: '⬡' };
+
+function weekLabel(pos) {
+  const w = Math.ceil(Math.min(pos, 9.5));
+  const labels = ['','W1 (6/5)','W2 (6/12)','W3 (6/19)','W4 (6/26)','W5 (7/3)','W6 (7/10)','W7 (7/17)','W8 (7/24)','W9 (7/31)','终 (8/7)'];
+  return labels[Math.min(w, 10)] || '';
+}
+
+const tip = document.getElementById('tip');
+
+function addTip(elem, title, startLbl, endLbl, note, color, status) {
+  const smap = { active: '🔵 进行中', plan: '🟡 规划推进中', done: '✅ 已完成' };
+  elem.addEventListener('mouseenter', (e) => {
+    tip.innerHTML = `
+      <div class="tip-title" style="color:${color || '#fff'}">${title}</div>
+      ${status ? `<div class="tip-row"><span class="tip-k">状态</span><span class="tip-v">${smap[status]||status}</span></div>` : ''}
+      ${startLbl ? `<div class="tip-row"><span class="tip-k">开始</span><span class="tip-v">${startLbl}</span></div>` : ''}
+      ${endLbl   ? `<div class="tip-row"><span class="tip-k">结束</span><span class="tip-v">${endLbl}</span></div>` : ''}
+      ${note ? `<div class="tip-note">${note}</div>` : ''}
+    `;
+    tip.classList.add('on');
+    moveTip(e);
+  });
+  elem.addEventListener('mousemove', moveTip);
+  elem.addEventListener('mouseleave', () => tip.classList.remove('on'));
+}
+
+function moveTip(e) {
+  const x = e.clientX + 14, y = e.clientY - 10;
+  const tw = tip.offsetWidth || 240, th = tip.offsetHeight || 100;
+  tip.style.left = Math.min(x, innerWidth - tw - 8) + 'px';
+  tip.style.top  = Math.max(0, Math.min(y, innerHeight - th - 8)) + 'px';
+}
+
+// ─── Render ───────────────────────────────────────────────────────────────
+const root = document.getElementById('ganttRoot');
+const COL = `210px repeat(${TOTAL_WEEKS}, 1fr)`;
+
+// Week header
+const hdrRow = el('div', 'g-row week-hdr');
+hdrRow.style.gridTemplateColumns = COL;
+const spacer = el('div', 'lc');
+spacer.innerHTML = '<span style="font-size:11px;color:#94a3b8">任务 / 里程碑</span>';
+hdrRow.appendChild(spacer);
+WEEK_HEADERS.forEach((w, i) => {
+  const wc = el('div', 'wc' + (i === 0 ? ' now' : ''));
+  wc.innerHTML = `${w.label}<br><span class="wdate">${w.date}</span>`;
+  hdrRow.appendChild(wc);
+});
+root.appendChild(hdrRow);
+
+// Today fraction (0-based, today = 0%)
+const todayLeft = pct(TODAY_POS);
+
+TRACKS.forEach(track => {
+  // Track header
+  const th = el('div', 'g-row track-hdr');
+  th.style.gridTemplateColumns = COL;
+  th.style.borderBottom = '1px solid #e2e8f0';
+
+  const tc = el('div', 'tc');
+  tc.style.background = track.bg;
+  tc.style.gridColumn = '1';
+  tc.innerHTML = `<span style="font-size:14px">${TRACK_ICONS[track.id]}</span> ${track.label}`;
+  th.appendChild(tc);
+
+  const tline = el('div', 'timeline-area');
+  tline.style.background = track.bg + '11';
+  tline.style.gridColumn = '2 / -1';
+  tline.style.position = 'relative';
+  tline.style.padding = '4px 0';
+
+  // today line in track header
+  const tl = el('div', 'today-line');
+  tl.style.left = '0%';
+  tline.appendChild(tl);
+
+  // Milestones in header area
+  track.milestones.forEach(m => {
+    const md = el('div', 'milestone');
+    md.style.left = `calc(${pct(m.pos)} - 5px)`;
+    md.style.background = m.color;
+    md.title = m.label;
+    md.style.border = '2px solid white';
+    addTip(md, m.label, '', '', `关键里程碑 · 目标 ${weekLabel(m.pos)}`, m.color);
+    tline.appendChild(md);
+
+    const ml = el('div', '');
+    ml.style.cssText = `position:absolute;left:${pct(m.pos)};transform:translateX(-50%);top:50%;margin-top:9px;font-size:9px;font-weight:800;color:${m.color};white-space:nowrap;letter-spacing:0.3px`;
+    ml.textContent = '◆ ' + m.label;
+    tline.appendChild(ml);
+  });
+
+  th.appendChild(tline);
+  root.appendChild(th);
+
+  // Task rows
+  track.tasks.forEach(task => {
+    const row = el('div', 'g-row task-row');
+    row.style.gridTemplateColumns = COL;
+
+    const lc = el('div', 'task-label');
+    const dot = el('div', 'sdot');
+    dot.style.background = task.status === 'active' ? track.color : '#cbd5e1';
+    lc.appendChild(dot);
+    lc.appendChild(document.createTextNode(task.name));
+    row.appendChild(lc);
+
+    const tc2 = el('div', 'task-timeline');
+    tc2.style.gridColumn = '2 / -1';
+
+    // Today line (faint in tasks)
+    const tlt = el('div', 'today-line');
+    tlt.style.left = '0%';
+    tlt.style.opacity = '0.2';
+    tlt.style.removeProperty && tlt.style.removeProperty('');
+    // remove ::after pseudo by styling differently
+    tc2.appendChild(tlt);
+
+    const bar = el('div', 'bar' + (task.status === 'active' ? ' bar-active' : ' bar-plan'));
+    bar.style.left = pct(task.s);
+    bar.style.width = widthPct(task.s, task.e);
+    bar.style.background = track.color;
+    bar.textContent = task.name;
+
+    // Progress fill for active tasks
+    if (task.status === 'active') {
+      const prog = el('div', 'bprog');
+      const elapsed = Math.min(Math.max((TODAY_POS - task.s) / (task.e - task.s), 0), 1);
+      prog.style.width = (elapsed * 100).toFixed(1) + '%';
+      bar.appendChild(prog);
+    }
+
+    addTip(bar, task.name, weekLabel(task.s), weekLabel(task.e - 0.01),
+      task.note, track.color, task.status);
+    tc2.appendChild(bar);
+    row.appendChild(tc2);
+    root.appendChild(row);
+  });
+});
+
+// Summary row showing key deliverables per week
+const weekTasks = [
+  'API Spec + 语义分块 + GraphRAG POC + 本体初稿 + PDF解析 + 离线包',
+  '报告向导UI + A/B框架 + 图谱检索 + OWL映射 + 矛盾检测 + 多模态评估',
+  '预览视图 + 增量更新 + KG编辑器 + 专家校验 + 证据溯源 + 多模态决策',
+  'Wizard完善 + Multi-KB + 跨文档融合 + 专家校验 + 并发Agent + 矛盾集成',
+  '移动端 + RAG调优 + KG联动 + 版本控制 + 论证评分 + 批量队列',
+  'V5测试 + 质量指标 + KG评测 + 跨域对齐 + QA仪表板 + 并发优化',
+  'V5发布 + 时效衰减 + KG合并 + 本体推断 + QA仪表板完善',
+  'V2全线完成验证 + 压力测试准备 + 迭代计划制定',
+  '全系统压力测试 & 验收',
+];
+const sumRow = el('div', 'summary-row');
+sumRow.style.gridTemplateColumns = COL;
+const sl = el('div', 'slabel');
+sl.textContent = '本周重点';
+sumRow.appendChild(sl);
+weekTasks.forEach((t, i) => {
+  const sc = el('div', 'scell');
+  sc.style.fontSize = '9px';
+  sc.style.lineHeight = '1.3';
+  sc.style.padding = '3px 4px';
+  sc.style.color = '#64748b';
+  // Show abbreviated version
+  const tasks = t.split(' + ');
+  sc.innerHTML = tasks.slice(0, 3).map(x => `<span style="display:block">${x}</span>`).join('') +
+    (tasks.length > 3 ? `<span style="color:#94a3b8">+${tasks.length-3}项</span>` : '');
+  sumRow.appendChild(sc);
+});
+root.appendChild(sumRow);
+
+</script>
+</body>
+</html>

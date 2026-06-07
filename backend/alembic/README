@@ -1,0 +1,26 @@
+# Alembic Migrations for DataAgent Studio
+
+## Quick Start
+
+```bash
+# Generate a new migration (auto-detect schema changes)
+cd backend
+alembic revision --autogenerate -m "add user preferences table"
+
+# Apply all pending migrations
+alembic upgrade head
+
+# Rollback one migration
+alembic downgrade -1
+
+# Show current revision
+alembic current
+
+# Show migration history
+alembic history --verbose
+```
+
+## SQLite vs PostgreSQL
+
+- **SQLite**: Used for development; lightweight migrations also handled by `app.database.run_migrations()`
+- **PostgreSQL**: Required for production with 200+ KBs; Alembic is the sole migration tool

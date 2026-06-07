@@ -1,0 +1,14 @@
+name: 矽岩律动
+category: 工业制造与工程
+palette: warm stone, sand, and off-white backgrounds, amber-brown accent, dark engineering text
+typography: sturdy title 30-36pt, compact body 13-16pt, tabular metrics and labels
+layouts:
+  - industrial cover with angular accent
+  - production process slide with staged flow
+  - cost, quality, and efficiency comparison table
+  - engineering risk matrix
+  - implementation roadmap with milestone bars
+content_rules:
+  - use this file only for visual style
+  - prefer precise tables, timelines, and process diagrams
+  - do not use demo manufacturing facts

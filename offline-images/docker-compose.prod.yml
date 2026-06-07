@@ -1,0 +1,69 @@
+# 生产环境 overlay（x86_64 内网服务器）
+#
+# 用法（服务器上，镜像已 load）:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# 离线镜像导入:
+#   docker load < deep-research-backend-amd64.tar
+#   docker load < deep-research-frontend-amd64.tar
+#   docker load < redis-7-alpine-amd64.tar
+
+services:
+  backend:
+    platform: linux/amd64
+    ports: !reset []             # 生产不对外暴露 backend 端口，统一走 nginx:80
+    user: "0:0"                  # 内网部署：以 root 运行避免 volume 写权限问题
+    # 生产环境使用 host-gateway 访问宿主机 Ollama（Linux Docker 标准方式）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - DEFAULT_LLM_BASE_URL=${DEFAULT_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "4.0"
+        reservations:
+          memory: 512M
+          cpus: "0.5"
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  frontend:
+    platform: linux/amd64
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  redis:
+    platform: linux/amd64
+    ports: !reset []           # 生产不对外暴露 Redis 端口
+    command: >
+      redis-server
+      --maxmemory 400mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1
+      --appendonly yes
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,25 @@
+# Mac 本机测试 overlay（Apple Silicon arm64 原生，无 QEMU）
+#
+# 用法:
+#   docker compose -f docker-compose.yml -f docker-compose.mac.yml up --build
+#
+# 说明:
+#   - platform: linux/arm64  → 原生运行，无需 QEMU 模拟
+#   - INSTALL_BROWSER=0      → 跳过 Playwright 节省 ~1.5GB / ~3 分钟
+#   - host.docker.internal   → Mac 上 Docker 容器访问宿主机 Ollama 的标准地址
+
+services:
+  backend:
+    platform: linux/arm64
+    build:
+      args:
+        INSTALL_BROWSER: "0"
+    environment:
+      - DEFAULT_LLM_BASE_URL=${DEFAULT_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      - ENABLE_BROWSER=false
+
+  frontend:
+    platform: linux/arm64
+
+  redis:
+    platform: linux/arm64

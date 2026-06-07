@@ -1,0 +1,11 @@
+name: generic
+purpose: visual style contract for PPT generation
+palette: neutral background, restrained accent, high contrast body text
+typography: title 28-36pt, body 14-18pt, metric 44-72pt
+layout_rules:
+  - one core message per slide
+  - prefer metric, comparison, timeline, framework, and action-plan layouts
+  - split slides when bullets exceed six
+content_rules:
+  - style file is not content evidence
+  - never use template sample text as final slide content

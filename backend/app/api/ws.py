@@ -141,74 +141,6 @@ async def broadcast_progress(report_id: int, data: dict):
     await broadcast_event(report_id, "research.progress", data)
 
 
-# ── Swarm Events ──
-
-async def broadcast_swarm_agent_spawned(report_id: int, agent_id: str, persona_id: str, name: str) -> None:
-    await broadcast_event(report_id, "swarm.agent.spawned", {
-        "agent_id": agent_id,
-        "persona_id": persona_id,
-        "name": name,
-    })
-
-
-async def broadcast_swarm_agent_status(report_id: int, agent_id: str, status: str, current_task_id: str | None = None) -> None:
-    await broadcast_event(report_id, "swarm.agent.status", {
-        "agent_id": agent_id,
-        "status": status,
-        "current_task_id": current_task_id,
-    })
-
-
-async def broadcast_swarm_task_added(report_id: int, task_id: str, query: str, agent_type: str, dependencies: list[str]) -> None:
-    await broadcast_event(report_id, "swarm.task.added", {
-        "task_id": task_id,
-        "query": query,
-        "agent_type": agent_type,
-        "dependencies": dependencies,
-    })
-
-
-async def broadcast_swarm_task_started(report_id: int, task_id: str, agent_id: str) -> None:
-    await broadcast_event(report_id, "swarm.task.started", {
-        "task_id": task_id,
-        "agent_id": agent_id,
-    })
-
-
-async def broadcast_swarm_task_completed(report_id: int, task_id: str, agent_id: str, summary: str = "") -> None:
-    await broadcast_event(report_id, "swarm.task.completed", {
-        "task_id": task_id,
-        "agent_id": agent_id,
-        "summary": summary,
-    })
-
-
-async def broadcast_swarm_task_failed(report_id: int, task_id: str, agent_id: str, error: str) -> None:
-    await broadcast_event(report_id, "swarm.task.failed", {
-        "task_id": task_id,
-        "agent_id": agent_id,
-        "error": error,
-    })
-
-
-async def broadcast_swarm_message(report_id: int, msg_id: str, from_agent: str, to_agent: str | None, topic: str, payload: dict) -> None:
-    await broadcast_event(report_id, "swarm.agent.message", {
-        "msg_id": msg_id,
-        "from_agent": from_agent,
-        "to_agent": to_agent,
-        "topic": topic,
-        "payload": payload,
-    })
-
-
-async def broadcast_swarm_consensus(report_id: int, passed: bool, confidence: float, failed_tasks: list[str]) -> None:
-    await broadcast_event(report_id, "swarm.consensus.result", {
-        "passed": passed,
-        "confidence": confidence,
-        "failed_tasks": failed_tasks,
-    })
-
-
 # ── Document Intermediate Output Events ──
 
 async def broadcast_section_draft(report_id: int, section_idx: int, title: str, content: str, word_count: int = 0) -> None:
@@ -270,16 +202,6 @@ async def broadcast_chart_figures(
         "task_id": task_id,           # which research sub-task
         "insight": insight,           # LLM-generated description
         "count": len(figures),
-    })
-
-
-async def broadcast_critical_path(report_id: int, critical_length: int, total_tasks: int, efficiency: float, suggestions: list[str]) -> None:
-    """Broadcast critical path analysis for the task graph."""
-    await broadcast_event(report_id, "swarm.critical_path", {
-        "critical_path_length": critical_length,
-        "total_tasks": total_tasks,
-        "parallel_efficiency": round(efficiency, 2),
-        "bottleneck_tasks": suggestions,
     })
 
 

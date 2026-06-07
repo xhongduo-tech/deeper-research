@@ -1,0 +1,38 @@
+__pycache__
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.so
+*.dylib
+
+# Database — never bake data into the image
+*.db
+*.db-shm
+*.db-wal
+
+# Dev/test artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+tests/
+
+# Runtime dirs — created by entrypoint or docker volume
+uploads/
+templates/
+sandbox_workspace/
+data/
+
+# Git / IDE
+.git/
+.gitignore
+.env
+.env.*
+*.md

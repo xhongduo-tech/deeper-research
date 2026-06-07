@@ -105,12 +105,30 @@ export type KnowledgeBase = {
   name: string;
   description?: string;
   scope?: string;
+  scope_label?: string;
   kb_type?: string;
+  type_label?: string;
   doc_count?: number;
   chunk_count?: number;
   total_size?: number;
+  size_display?: string;
+  embed_model?: string;
+  owner_id?: number;
   created_at?: string;
   updated_at?: string;
+};
+
+export type KBDocument = {
+  id: number;
+  kb_id: number;
+  title: string;
+  file_type?: string;
+  file_size?: number;
+  content_preview?: string;
+  chunk_count?: number;
+  status?: string;
+  error_msg?: string;
+  created_at?: string;
 };
 
 export type OfficialDataSource = {
@@ -298,6 +316,77 @@ class DataAgentApi {
     return this.request<DashboardMetrics>("/api/dashboard/metrics");
   }
 
+  async kbCoverage() {
+    return this.request<{
+      summary: {
+        total_planned_kbs: number;
+        total_actual_kbs: number;
+        total_kb_coverage_pct: number;
+        total_planned_docs: number;
+        total_actual_files: number;
+        total_doc_coverage_pct: number;
+        total_planned_size_gb: number;
+        total_actual_size_gb: number;
+        total_size_coverage_pct: number;
+      };
+      domains: Array<{
+        name: string;
+        en_name: string;
+        color: string;
+        planned_kbs: number;
+        actual_kbs: number;
+        actual_files: number;
+        actual_size_mb: number;
+        coverage_score: number;
+        kb_coverage_pct: number;
+        doc_coverage_pct: number;
+        size_coverage_pct: number;
+        subdomains: Array<{
+          name: string;
+          planned_kbs: number;
+          actual_kbs: number;
+          actual_files: number;
+          actual_size_mb: number;
+          coverage_pct: number;
+          sources: string[];
+          key_apis: string[];
+        }>;
+      }>;
+      missing_sources: Array<{
+        category: string;
+        missing: Array<{
+          source: string;
+          issue: string;
+          alternative: string;
+          effort: string;
+        }>;
+      }>;
+    }>("/api/dashboard/kb-coverage");
+  }
+
+  async kbNetworkGraph() {
+    return this.request<{
+      nodes: Array<{
+        id: string;
+        label: string;
+        type: string;
+        coverage_score: number;
+        size: number;
+        color: string;
+        status: string;
+        planned_kbs?: number;
+        actual_kbs?: number;
+        actual_files?: number;
+        actual_size_mb?: number;
+        parent?: string;
+      }>;
+      edges: Array<{ source: string; target: string; strength: number }>;
+      summary: unknown;
+      domains: unknown[];
+      missing_sources: unknown[];
+    }>("/api/dashboard/kb-coverage/network");
+  }
+
   // Generic helpers for feature-specific APIs
   async get<T>(path: string): Promise<T> {
     return this.request<T>(path);
@@ -373,6 +462,8 @@ class DataAgentApi {
     effort?: string;
     conversation_id?: number;
     uploaded_files?: number[];
+    kb_ids?: number[];
+    include_system_kb?: boolean;
   }) {
     return this.request<{ report_id: number; answer: string; messages: ChatMessage[] }>("/api/chat", {
       method: "POST",
@@ -403,6 +494,8 @@ class DataAgentApi {
       effort?: string;
       conversation_id?: number;
       uploaded_files?: number[];
+      kb_ids?: number[];
+      include_system_kb?: boolean;
     },
     handlers: {
       onStart?: (reportId: number) => void;
@@ -547,28 +640,121 @@ class DataAgentApi {
     });
   }
 
-  async listKBs() {
-    return this.request<{ items: KnowledgeBase[]; total: number }>("/api/kb");
+  async listKBs(scope?: string) {
+    const qs = scope ? `?scope=${encodeURIComponent(scope)}` : "";
+    return this.request<{ items: KnowledgeBase[]; total: number }>(`/api/kb${qs}`);
   }
 
-  async listOfficialSources(): Promise<{ sources: OfficialDataSource[] }> {
-    return this.request<{ sources: OfficialDataSource[] }>("/api/v1/official-sources");
+  async listOfficialSources(): Promise<{ sources: OfficialDataSource[]; categories: string[]; by_category: Record<string, OfficialDataSource[]> }> {
+    return this.request<{ sources: OfficialDataSource[]; categories: string[]; by_category: Record<string, OfficialDataSource[]> }>("/api/v1/official-sources");
   }
 
-  async createKB(name: string, description = "") {
+  async getOfficialSource(key: string) {
+    return this.request<OfficialDataSource>(`/api/v1/official-sources/${encodeURIComponent(key)}`);
+  }
+
+  async getOfficialSourceSample(key: string) {
+    return this.request<{
+      source_key: string;
+      samples: Array<{ kb_id: number; kb_name: string; content: string }>;
+      total_kb_matched: number;
+    }>(`/api/v1/official-sources/${encodeURIComponent(key)}/sample`);
+  }
+
+  async getDataGraph() {
+    return this.request<{
+      nodes: Array<{
+        id: string;
+        label: string;
+        type: string;
+        coverage_score: number;
+        size: number;
+        color: string;
+        status: string;
+        planned_kbs?: number;
+        actual_kbs?: number;
+        actual_files?: number;
+        actual_size_mb?: number;
+        parent?: string;
+        kb_ids?: string[];
+      }>;
+      edges: Array<{ source: string; target: string; strength: number }>;
+      summary: unknown;
+      domains: unknown[];
+      missing_sources: unknown[];
+    }>("/api/dashboard/kb-coverage/network");
+  }
+
+  async searchKBsMulti(query: string, kbIds: number[], includeSystem = false) {
+    return this.request<{
+      query: string;
+      results: Array<{ content: string; score: number; source: string; kb_id: number; doc_id: number }>;
+      total: number;
+      kb_ids_searched: number[];
+    }>("/api/kb/search/multi", {
+      method: "POST",
+      body: JSON.stringify({ query, top_k: 8, score_threshold: 0.15, kb_ids: kbIds, include_system: includeSystem }),
+    });
+  }
+
+  async createKB(name: string, opts: { description?: string; scope?: string; kb_type?: string } = {}) {
     return this.request<KnowledgeBase>("/api/kb", {
       method: "POST",
-      body: JSON.stringify({ name, description, scope: "personal", kb_type: "general" }),
+      body: JSON.stringify({
+        name,
+        description: opts.description ?? "",
+        scope: opts.scope ?? "personal",
+        kb_type: opts.kb_type ?? "general",
+      }),
     });
+  }
+
+  async deleteKB(kbId: number) {
+    return this.request<{ message: string }>(`/api/kb/${kbId}`, { method: "DELETE" });
+  }
+
+  async listKBDocuments(kbId: number) {
+    return this.request<{ items: KBDocument[]; total: number }>(`/api/kb/${kbId}/documents`);
   }
 
   async uploadKBDocument(kbId: number, file: File) {
     const form = new FormData();
     form.append("file", file);
-    return this.request(`/api/kb/${kbId}/documents`, {
+    return this.request<KBDocument>(`/api/kb/${kbId}/documents`, {
       method: "POST",
       body: form,
     });
+  }
+
+  async deleteKBDocument(kbId: number, docId: number) {
+    return this.request<{ message: string }>(`/api/kb/${kbId}/documents/${docId}`, { method: "DELETE" });
+  }
+
+  // ── Admin: offline bulk import (2TB lane) ──────────────────────────────────
+
+  async bulkImportScan(sourceDir?: string) {
+    const qs = sourceDir ? `?source_dir=${encodeURIComponent(sourceDir)}` : "";
+    return this.request<{
+      source_dir: string; exists: boolean; hint?: string;
+      kb_dirs: Array<{ dir: string; name: string; kb_type: string; has_metadata: boolean; file_count: number; size_mb: number }>;
+      total_kb?: number; total_files?: number; total_size_mb?: number;
+    }>(`/api/admin/bulk-import/scan${qs}`);
+  }
+
+  async bulkImportRun(sourceDir?: string) {
+    return this.request<{ status: string; source_dir: string }>("/api/admin/bulk-import/run", {
+      method: "POST",
+      body: JSON.stringify({ source_dir: sourceDir ?? null }),
+    });
+  }
+
+  async bulkImportStatus() {
+    return this.request<{
+      running: boolean; source_dir: string; started_at: string | null; finished_at: string | null;
+      last_summary: { kb_count: number; files_processed: number; chunks_ingested: number; elapsed_seconds: number } | null;
+      error: string | null;
+      checkpoint: { files_processed: number; chunks_ingested: number; last_updated: string };
+    }>("/api/admin/bulk-import/status");
   }
 
   downloadReportUrl(reportId: number, outputFormat = "word") {
@@ -601,6 +787,84 @@ class DataAgentApi {
     const filename = parseDownloadFilename(disposition) || `DataAgent文档.${fmt}`;
     triggerBrowserDownload(blob, filename);
     return { filename, size: blob.size, format: fmt };
+  }
+
+  // ── LLM-OS: Ingress Gateway ──────────────────────────────────────────────────
+
+  /** 上传任意文件（含 .zip/.tar.gz），解析为标准化资产摘要 */
+  async ingestUpload(file: File, reportId?: number, isTemplate = false) {
+    const form = new FormData();
+    form.append("file", file);
+    if (reportId) form.append("report_id", String(reportId));
+    if (isTemplate) form.append("is_template", "true");
+    return this.request<{
+      file_id: number;
+      filename: string;
+      vfs_summary: { total_files: number; by_type: Record<string, number>; total_size_kb: number };
+      directory_tree: string;
+      assets: Array<{ path: string; type: string; language: string; size_bytes: number; summary: string }>;
+      total_assets: number;
+    }>("/api/ingress/upload", { method: "POST", body: form });
+  }
+
+  /** 获取 VFS 目录树 */
+  async getVfsTree(fileId: string) {
+    return this.request<{ file_id: string; tree: string; summary: Record<string, unknown> }>(
+      `/api/ingress/vfs/${fileId}/tree`
+    );
+  }
+
+  /** 获取 VFS 中某文件的解析内容 */
+  async getVfsFile(fileId: string, path: string) {
+    const qs = `?path=${encodeURIComponent(path)}`;
+    return this.request<{ path: string; type: string; language: string; context_text: string; summary: string }>(
+      `/api/ingress/vfs/${fileId}/file${qs}`
+    );
+  }
+
+  // ── LLM-OS: Compute ───────────────────────────────────────────────────────────
+
+  /** 将已上传的结构化文件注册为 DuckDB 内存表 */
+  async duckdbRegister(sessionId: string, fileId: number, tableName?: string) {
+    return this.request<{ session_id: string; table_name: string; schema: string; sample: Record<string, unknown>[] }>(
+      "/api/compute/duckdb/register",
+      {
+        method: "POST",
+        body: JSON.stringify({ session_id: sessionId, file_id: fileId, table_name: tableName }),
+      }
+    );
+  }
+
+  /** 执行 SQL 查询或自然语言查询 */
+  async duckdbQuery(sessionId: string, query: string, nl = false) {
+    return this.request<{
+      success: boolean; sql: string; error?: string;
+      columns: string[]; rows: Record<string, unknown>[];
+      row_count: number; exec_ms: number; markdown: string;
+    }>("/api/compute/duckdb/query", {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId, query, nl }),
+    });
+  }
+
+  /** 多语言代码执行 */
+  async sandboxRun(code: string, language = "python", timeout?: number) {
+    return this.request<{
+      success: boolean; language: string;
+      stdout: string; stderr: string; error?: string;
+      exec_ms: number; figures: Array<{ format: string; base64: string }>;
+    }>("/api/compute/sandbox/run", {
+      method: "POST",
+      body: JSON.stringify({ code, language, timeout }),
+    });
+  }
+
+  /** 自然语言 → ECharts iframe widget */
+  async generateWidget(question: string, records: Record<string, unknown>[], title = "") {
+    return this.request<{ html: string }>("/api/compute/widget/generate", {
+      method: "POST",
+      body: JSON.stringify({ question, records, title }),
+    });
   }
 
   reportSocket(reportId: number) {

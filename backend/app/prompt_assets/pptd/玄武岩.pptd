@@ -1,0 +1,13 @@
+name: 玄武岩
+category: 自然科技
+palette: deep stone background, cool blue-gray accent, bright body text
+typography: serious technical title, dense but readable bullets
+layouts:
+  - architecture migration cover
+  - layered system diagram
+  - risk matrix
+  - roadmap
+  - conclusion with engineering tradeoffs
+content_rules:
+  - use this file only for visual style
+  - do not use demo architecture content

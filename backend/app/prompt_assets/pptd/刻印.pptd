@@ -1,0 +1,14 @@
+name: 刻印
+category: 商务经典
+palette: dark charcoal background, muted gold accent, warm off-white text
+typography: authoritative title, compact executive body, strong number emphasis
+layouts:
+  - cover with strong title and small subtitle
+  - agenda with numbered sections
+  - executive metric cards
+  - comparison table with gold separators
+  - action plan with milestone bars
+content_rules:
+  - use this file only for visual style
+  - do not use demo annual-report content
+  - source facts must come from user input, uploaded files, KB, or verified findings

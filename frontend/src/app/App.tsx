@@ -4,13 +4,11 @@ import { ChatInput } from "./components/ChatInput";
 import { SuggestionChips, ScenarioSuggestion } from "./components/SuggestionChips";
 import { Sparkles, ThumbsUp, ThumbsDown, MessageCircle, Code2, Copy, Play, X, CheckCircle2, Circle, Loader2, FileCode2, Download, Pencil, File, ChevronRight, Terminal, FileSearch, PenLine, ClipboardCheck, RotateCcw, Database } from "lucide-react";
 import { TemplatePage, docsConfig } from "./components/TemplatePage";
-import KnowledgeGraphPage from "./components/KnowledgeGraphPage";
-import SentimentPage from "./components/SentimentPage";
 import HtmlPage from "./components/HtmlPage";
 import TechIntroModal from "./components/TechIntroModal";
 import { WelcomeModal, useWelcomeModal } from "./components/WelcomeModal";
-import LabPage from "./components/LabPage";
-import { DataSourcePage } from "./components/DataSourcePage";
+import DataLabPage from "./components/DataLabPage";
+import KnowledgeBasePage from "./components/KnowledgeBasePage";
 import { DatabaseQueryCard } from "./components/DatabaseQueryCard";
 import { PlanStepper, StepItem, ThinkingBlock, TypingText, stripPlanStepNumber as stripStep } from "./components/PlanStepper";
 import { LoginModal } from "./components/LoginModal";
@@ -46,6 +44,8 @@ type SubmitPayload = {
   skills?: string[];
   executionMode?: "direct" | "plan";
   database?: string | null;
+  kb_ids?: number[];
+  include_system_kb?: boolean;
 };
 
 type DocumentPlanQuestion = {
@@ -517,6 +517,8 @@ export default function App() {
             effort: payload.effort || "low",
             conversation_id: activeChatId || undefined,
             uploaded_files: uploadedIds,
+            kb_ids: payload.kb_ids || [],
+            include_system_kb: payload.include_system_kb || false,
           });
           if (cancelledConversationsRef.current.has(localConversationId)) return;
           const realId = String(result.report_id);
@@ -574,6 +576,7 @@ export default function App() {
         model_id: payload.modelId || undefined,
         effort: payload.effort || "low",
         skills: payload.skills || [],
+        kb_ids: payload.kb_ids || [],
       });
       const conversation = reportToConversation(report);
       setConversations((prev) => [conversation, ...prev.filter((c) => c.id !== conversation.id)]);
@@ -743,17 +746,13 @@ export default function App() {
         }
 	        return <TemplatePage config={docsConfig} onSubmit={handleCreateReport} busy={busy}
 	          onOpenTechIntro={(id) => { setTechModalInitialId(id); setTechModalOpen(true); }}
-	          onOpenDatabasePage={() => handlePageSelect("datasource")} />;
+	          onOpenDatabasePage={() => handlePageSelect("datalab")} />;
       case "sheet":
         return <FeatureInProgressPage title="表格" />;
-	      case "knowledge_graph":
-	      case "sentiment":
-	        // Legacy aliases → unified Lab page
-	        return <LabPage onOpenTechIntro={(id) => { setTechModalInitialId(id); setTechModalOpen(true); }} />;
-	      case "datasource":
-	        return <DataSourcePage />;
-      case "lab":
-        return <LabPage onOpenTechIntro={(id) => { setTechModalInitialId(id); setTechModalOpen(true); }} />;
+      case "datalab":
+        return <DataLabPage />;
+      case "knowledge":
+        return <KnowledgeBasePage />;
 	      case "html":
         return (
           <HtmlPage

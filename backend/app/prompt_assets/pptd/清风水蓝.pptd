@@ -1,0 +1,14 @@
+name: 清风水蓝
+category: 医疗健康与公共服务
+palette: white and light sky-blue backgrounds, cyan-blue accents, graphite text, soft panels
+typography: clean title 28-34pt, calm body 14-18pt, moderate metric emphasis
+layouts:
+  - bright cover with soft circular accent
+  - diagnosis or status slide with cards and concise labels
+  - process slide using clean step flow
+  - evidence slide combining chart and short interpretation
+  - next-step checklist with light blue markers
+content_rules:
+  - use this file only for visual style
+  - avoid heavy dark blocks unless used for chart contrast
+  - do not use demo healthcare facts

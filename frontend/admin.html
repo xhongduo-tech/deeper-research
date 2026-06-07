@@ -66,6 +66,7 @@
     .metric-val{font-size:28px;font-weight:800;letter-spacing:-.03em;color:var(--ink)}
     .metric-label{font-size:12px;color:var(--ink-3);margin-top:4px}
     .metric-sub{font-size:11.5px;color:var(--ink-4)}
+    .stat-val{font-size:22px;font-weight:700;color:var(--ink);letter-spacing:-.02em}
 
     /* ── Status pills ── */
     .pill{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}
@@ -235,6 +236,7 @@ const TABS = [
   { id:"users",     label:"用户管理",  icon:`<svg class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>`, desc:"用户账号、角色、部门和历史任务管理。" },
   { id:"tasks",      label:"任务队列",  icon:`<svg class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>`, desc:"生成任务列表、状态监控和错误排查。" },
   { id:"datasources",label:"数据源",    icon:`<svg class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.657 4.03 3 9 3s9-1.343 9-3V5"/><path d="M3 11v6c0 1.657 4.03 3 9 3s9-1.343 9-3v-6"/></svg>`, desc:"官方数据库接入状态与API密钥配置。" },
+  { id:"offline",   label:"离线知识库",icon:`<svg class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M21 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v3"/><path d="M3 8h18v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8z"/><path d="M12 12v5M9 14l3 3 3-3"/></svg>`, desc:"海量离线语料批量入库（bulk_importer）：扫描 kb_sources/ 目录树，分块+embedding 写入 Vector RAG。" },
 ];
 
 const PRESETS = {
@@ -245,7 +247,7 @@ const PRESETS = {
   vllm:     { url:"http://localhost:8080/v1", key:"token",   note:"vLLM 本地" },
 };
 
-let S = { tab:"overview", me:null, stats:null, cfg:null, caps:null, users:[], reports:[], sources:[], datasources:[], selectedDatasource:null };
+let S = { tab:"overview", me:null, stats:null, cfg:null, caps:null, users:[], reports:[], sources:[], datasources:[], selectedDatasource:null, bulkStatus:null, bulkScan:null, bulkPoll:null };
 
 const $  = id => document.getElementById(id);
 const tok = () => localStorage.getItem("da_admin_tok") || "";
@@ -308,8 +310,24 @@ async function loadTab(){
     if(S.tab==="tasks"){ const d=await api("/api/admin/reports?limit=100"); S.reports=d.items||[]; }
     if(S.tab==="users"){ const d=await api("/api/admin/users"); S.users=d.users||[]; }
     if(S.tab==="datasources"){ await loadDatasources(); }
+    if(S.tab==="offline"){ await loadOffline(); }
     renderPage();
   } catch(e){ toast(e.message, false); }
+}
+
+async function loadOffline(){
+  try { S.bulkStatus = await api("/api/admin/bulk-import/status"); }
+  catch(e){ S.bulkStatus = null; }
+}
+
+function startBulkPoll(){
+  if(S.bulkPoll) return;
+  S.bulkPoll = setInterval(async()=>{
+    if(S.tab!=="offline"){ clearInterval(S.bulkPoll); S.bulkPoll=null; return; }
+    await loadOffline();
+    renderPage();
+    if(S.bulkStatus && !S.bulkStatus.running){ clearInterval(S.bulkPoll); S.bulkPoll=null; }
+  }, 3000);
 }
 
 async function loadDatasources(){
@@ -329,7 +347,7 @@ function renderPage(){
   const meta = TABS.find(t=>t.id===S.tab)||TABS[0];
   $("pageTitle").textContent = meta.label;
   $("pageDesc").textContent = meta.desc;
-  const views = { overview:viewOverview, models:viewModels, rag:viewRag, pipeline:viewPipeline, users:viewUsers, tasks:viewTasks, datasources:viewDatasources };
+  const views = { overview:viewOverview, models:viewModels, rag:viewRag, pipeline:viewPipeline, users:viewUsers, tasks:viewTasks, datasources:viewDatasources, offline:viewOffline };
   $("view").innerHTML = (views[S.tab]||viewOverview)();
   bindPage();
 }
@@ -793,10 +811,90 @@ function viewDatasources(){
     </div>`;
 }
 
+// ── Offline bulk import (2TB lane) ────────────────────────────────────────────
+function viewOffline(){
+  const st = S.bulkStatus;
+  const cp = st && st.checkpoint || {};
+  const scan = S.bulkScan;
+  const running = st && st.running;
+  const summary = st && st.last_summary;
+
+  const statusCard = `
+    <div class="card">
+      <div class="card-head"><span class="card-title">批量入库状态</span>
+        ${running ? pill("running") : (st && st.error ? pill("error") : pill("ok"))}</div>
+      <div class="card-body gap-y-12">
+        <div class="form-grid">
+          <div class="field"><label class="field-label">已处理文档</label><div class="stat-val">${(cp.files_processed||0).toLocaleString()}</div></div>
+          <div class="field"><label class="field-label">已写入切片(chunks)</label><div class="stat-val">${(cp.chunks_ingested||0).toLocaleString()}</div></div>
+          <div class="field"><label class="field-label">断点更新时间</label><div class="text-sm text-muted">${cp.last_updated ? new Date(cp.last_updated).toLocaleString() : "—"}</div></div>
+        </div>
+        ${summary ? `<div class="text-sm text-muted">上次任务：${summary.kb_count} 个库 · ${summary.files_processed} 文档 · ${summary.chunks_ingested} 切片 · ${Math.round(summary.elapsed_seconds)}s</div>`:""}
+        ${st && st.error ? `<div class="pill bad" style="align-self:flex-start"><span class="dot bad"></span>${st.error}</div>`:""}
+        <div class="text-sm text-muted" style="font-size:12px">断点续传：bulk_importer 用内容哈希跳过已入库文档，2TB 可分多次/中断后续跑，进度持久化于 data/bulk_import_progress.json。</div>
+      </div>
+    </div>`;
+
+  const scanRows = scan && scan.exists ? (scan.kb_dirs||[]).map(d=>`
+    <tr>
+      <td>${d.dir}</td><td>${d.name}</td>
+      <td><span class="pill neutral">${d.kb_type}</span></td>
+      <td>${d.has_metadata ? pill("ok") : pill("warn")}</td>
+      <td style="text-align:right">${d.file_count}</td>
+      <td style="text-align:right">${d.size_mb} MB</td>
+    </tr>`).join("") : "";
+
+  const scanCard = `
+    <div class="card">
+      <div class="card-head"><span class="card-title">语料目录扫描</span></div>
+      <div class="card-body gap-y-12">
+        <div class="field">
+          <label class="field-label">源目录（服务器路径 / MinIO 挂载点，留空用默认 data/kb_sources）</label>
+          <div style="display:flex;gap:8px">
+            <input class="input" id="bulkDir" placeholder="./data/kb_sources" value="${scan?scan.source_dir:""}" style="flex:1"/>
+            <button class="btn" id="bulkScanBtn">扫描</button>
+          </div>
+        </div>
+        ${scan ? (scan.exists ? `
+          <div class="text-sm text-muted">共 ${scan.total_kb} 个知识库目录 · ${scan.total_files} 文档 · ${scan.total_size_mb} MB</div>
+          <div style="overflow:auto;border:1px solid var(--border);border-radius:8px">
+            <table><thead><tr>
+              <th>目录</th><th>名称</th><th>类型</th><th>metadata</th><th style="text-align:right">文档数</th><th style="text-align:right">大小</th>
+            </tr></thead><tbody>${scanRows||`<tr><td colspan="6" class="text-sm text-muted">（无子目录）</td></tr>`}</tbody></table>
+          </div>
+          <button class="btn btn-primary" id="bulkRunBtn" ${running?"disabled":""}>${running?"入库进行中…":"开始批量入库"}</button>
+        ` : `<div class="pill warn" style="align-self:flex-start"><span class="dot warn"></span>${scan.hint||"目录不存在"}</div>`) : `
+          <div class="text-sm text-muted">点击「扫描」预览语料目录树。期望结构：<code>kb_sources/kb_XXX_域名/</code>（每个子目录含 metadata.json 与 .md/.txt 文档）。</div>`}
+      </div>
+    </div>`;
+
+  return `<div class="gap-y-12">${statusCard}${scanCard}</div>`;
+}
+
 // ── Bind events ───────────────────────────────────────────────────────────────
 function bindPage(){
   // Toggle switches
   document.querySelectorAll(".switch:not([disabled])").forEach(b => b.onclick = ()=>b.classList.toggle("on"));
+
+  // Offline bulk import
+  const bulkScanBtn = $("bulkScanBtn");
+  if(bulkScanBtn) bulkScanBtn.onclick = async()=>{
+    const dir = ($("bulkDir").value||"").trim();
+    bulkScanBtn.disabled = true; bulkScanBtn.textContent = "扫描中…";
+    try { S.bulkScan = await api("/api/admin/bulk-import/scan"+(dir?`?source_dir=${encodeURIComponent(dir)}`:"")); renderPage(); }
+    catch(e){ toast(e.message,false); bulkScanBtn.disabled=false; bulkScanBtn.textContent="扫描"; }
+  };
+  const bulkRunBtn = $("bulkRunBtn");
+  if(bulkRunBtn) bulkRunBtn.onclick = async()=>{
+    const dir = ($("bulkDir")?$("bulkDir").value:"").trim();
+    bulkRunBtn.disabled = true; bulkRunBtn.textContent = "启动中…";
+    try {
+      await api("/api/admin/bulk-import/run",{method:"POST",body:JSON.stringify({source_dir:dir||null})});
+      toast("批量入库已启动 — 进度将自动刷新 ✓");
+      startBulkPoll();
+    } catch(e){ toast(e.message,false); bulkRunBtn.disabled=false; bulkRunBtn.textContent="开始批量入库"; }
+  };
+  if(S.tab==="offline" && S.bulkStatus && S.bulkStatus.running) startBulkPoll();
 
   // Model card delete
   document.querySelectorAll("[data-remove-card]").forEach(b => b.onclick = ()=>b.closest("[data-model-card]").remove());

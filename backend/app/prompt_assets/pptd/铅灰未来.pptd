@@ -1,0 +1,14 @@
+name: 铅灰未来
+category: 商务科技
+palette: charcoal gray and graphite backgrounds, violet accent, off-white text, subtle divider lines
+typography: restrained executive title 30-36pt, dense but readable body 13-16pt, highlighted numbers 44-64pt
+layouts:
+  - executive cover with minimal geometric accent
+  - strategy analysis slide with two-column evidence and implication
+  - comparison table with low-saturation separators
+  - risk and opportunity matrix
+  - recommendation slide with numbered actions
+content_rules:
+  - use this file only for visual style
+  - keep contrast high on dark backgrounds
+  - do not use demo AI-industry facts

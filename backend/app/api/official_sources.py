@@ -49,6 +49,9 @@ def _source_to_dict(src: OfficialDataSource) -> dict:
         "sample_queries": sample_queries,
         "coverage": src.coverage,
         "doc_count": src.doc_count,
+        "offline_doc_count": src.offline_doc_count or 0,
+        "offline_available": src.offline_available,
+        "requires_api_key": src.requires_api_key,
         "last_synced_at": src.last_synced_at.isoformat() if src.last_synced_at else None,
         "created_at": src.created_at.isoformat() if src.created_at else None,
     }
@@ -84,6 +87,74 @@ async def list_official_sources(
         "total": len(sources),
         "categories": list(categories.keys()),
         "by_category": categories,
+    }
+
+
+@router.get("/{key}")
+async def get_source_detail(
+    key: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get detailed info for a single official data source."""
+    src = (await db.execute(
+        select(OfficialDataSource).where(OfficialDataSource.key == key)
+    )).scalar_one_or_none()
+    if not src:
+        raise HTTPException(status_code=404, detail=f"Source key '{key}' not found")
+    return _source_to_dict(src)
+
+
+@router.get("/{key}/sample")
+async def get_source_sample(
+    key: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return up to 3 sample content snippets from the offline KB for this source."""
+    from app.models.knowledge_base import KnowledgeBase, KBChunk
+    from sqlalchemy import func
+
+    # Find system KBs that match this source key (by name or domain tags)
+    # First try exact match on metadata source_keys, then fallback to name similarity
+    kbs = (await db.execute(
+        select(KnowledgeBase).where(
+            (KnowledgeBase.scope == "corp") &
+            (KnowledgeBase.name.ilike(f"%{key}%"))
+        ).limit(3)
+    )).scalars().all()
+
+    if not kbs:
+        # Fallback: any corp KB in the same category
+        src = (await db.execute(
+            select(OfficialDataSource).where(OfficialDataSource.key == key)
+        )).scalar_one_or_none()
+        if src:
+            kbs = (await db.execute(
+                select(KnowledgeBase).where(
+                    (KnowledgeBase.scope == "corp") &
+                    (KnowledgeBase.kb_type.ilike(f"%{src.category[:4]}%"))
+                ).limit(3)
+            )).scalars().all()
+
+    samples = []
+    for kb in kbs:
+        chunks = (await db.execute(
+            select(KBChunk).where(KBChunk.kb_id == kb.id).limit(3)
+        )).scalars().all()
+        for chunk in chunks:
+            samples.append({
+                "kb_id": kb.id,
+                "kb_name": kb.name,
+                "content": (chunk.content or "")[:500],
+            })
+        if len(samples) >= 3:
+            break
+
+    return {
+        "source_key": key,
+        "samples": samples[:3],
+        "total_kb_matched": len(kbs),
     }
 
 

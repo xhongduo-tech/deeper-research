@@ -1,0 +1,13 @@
+name: 自由风格
+category: AI 智能排版
+palette: adaptive palette selected from the topic, with one dominant accent and neutral readable backgrounds
+typography: expressive title 30-38pt, concise body 14-18pt, strong metric emphasis
+layouts:
+  - adaptive cover based on topic and audience
+  - mixed narrative slides with metric, comparison, timeline, and framework layouts
+  - content-density aware split when bullets exceed six
+  - visual summary slide with one clear takeaway
+content_rules:
+  - use this file only for visual style
+  - choose the clearest layout for each slide instead of repeating one motif
+  - source facts must come from user input, uploaded files, KB, or verified findings

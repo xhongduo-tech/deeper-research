@@ -1,0 +1,14 @@
+name: 墨草锋线
+category: ESG 与可持续发展
+palette: pale mint and natural green backgrounds, deep emerald accents, dark graphite text
+typography: organic but professional title 28-36pt, spacious body 14-18pt, metric numerals 42-64pt
+layouts:
+  - sustainability cover with calm green field and short subtitle
+  - ESG framework slide with three pillars
+  - impact metrics slide with cards and trend callouts
+  - initiative roadmap using green milestones
+  - conclusion slide with commitments and measurable targets
+content_rules:
+  - use this file only for visual style
+  - keep the page clean and avoid excessive nature decoration
+  - do not use demo ESG facts

@@ -1,0 +1,143 @@
+services:
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: dataagent
+      POSTGRES_PASSWORD: dataagent
+      POSTGRES_DB: dataagent
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - ./data/pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dataagent -d dataagent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Qdrant (Vector Store) ───────────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./data/qdrant_storage:/qdrant/storage
+      - ./data/qdrant_snapshots:/qdrant/snapshots
+    environment:
+      QDRANT__STORAGE__STORAGE_PATH: /qdrant/storage
+      QDRANT__SNAPSHOTS__SNAPSHOTS_PATH: /qdrant/snapshots
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend (FastAPI) ───────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: deep-research-backend:latest
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      # ── 数据库 ─────────────────────────────────────────────────────────────
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://dataagent:dataagent@postgres:5432/dataagent}
+      - DATABASE_TYPE=${DATABASE_TYPE:-postgresql}
+      - REDIS_URL=redis://redis:6379
+      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
+      # ── 路径 ───────────────────────────────────────────────────────────────
+      - UPLOAD_DIR=/app/uploads
+      - TEMPLATE_DIR=/app/templates
+      - SANDBOX_WORKSPACE=/app/sandbox_workspace
+      - DATA_DIR=/app/data
+      - KB_DATA_PATH=/app/data/kb_sources
+      # ── 初始管理员 ─────────────────────────────────────────────────────────
+      - DEFAULT_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME:-admin}
+      - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-admin123456}
+      # ── Embedding 集群（OpenAI-compatible，多节点 BGE-M3）────────────────────
+      - EMBED_BASE_URL=${EMBED_BASE_URL:-http://embedding-lb:8080/v1}
+      - EMBED_API_KEY=${EMBED_API_KEY:-}
+      - EMBED_MODEL=${EMBED_MODEL:-bge-m3}
+      - EMBED_BATCH_SIZE=${EMBED_BATCH_SIZE:-64}
+      - DEFAULT_LLM_BASE_URL=${DEFAULT_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      - DEFAULT_LLM_MODEL=${DEFAULT_LLM_MODEL:-qwen2.5:72b}
+      - DEFAULT_LLM_API_KEY=${DEFAULT_LLM_API_KEY:-ollama}
+      # ── 向量存储 ───────────────────────────────────────────────────────────
+      - VECTOR_STORE_TYPE=${VECTOR_STORE_TYPE:-qdrant}
+      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-kb_chunks}
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+      # ── RAG 参数 ───────────────────────────────────────────────────────────
+      - RAG_CHUNK_SIZE=${RAG_CHUNK_SIZE:-2000}
+      - RAG_CHUNK_OVERLAP=${RAG_CHUNK_OVERLAP:-200}
+      - RAG_TOP_K=${RAG_TOP_K:-10}
+      - RAG_SCORE_THRESHOLD=${RAG_SCORE_THRESHOLD:-0.15}
+      - SANDBOX_TIMEOUT=${SANDBOX_TIMEOUT:-30}
+      - MAX_WORKERS=${MAX_WORKERS:-4}
+    volumes:
+      - ./data/uploads:/app/uploads
+      - ./data/templates:/app/templates
+      - ./data/sandbox:/app/sandbox_workspace
+      - ./data/db:/app/data
+      - ./data/kb_sources:/app/data/kb_sources
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 8s
+      start_period: 40s
+      retries: 5
+
+  # ── Frontend (React + Vite → Nginx) ────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: deep-research-frontend:latest
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # ── Redis (session / cache) ─────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  app-network:
+    driver: bridge

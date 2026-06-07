@@ -1,0 +1,88 @@
+# =============================================================================
+# Optional overlay: BGE-M3 embedding cluster
+# =============================================================================
+#
+# Adds horizontally-scalable BGE-M3 embedding workers + nginx LB to the main
+# DataAgent stack. Use this when you want the backend to call an in-cluster
+# embedding service instead of an external Ollama / vLLM / xinference server.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.embedding.yml up -d
+#
+# The backend is pre-configured to point EMBED_BASE_URL at the internal LB:
+#   http://embedding-lb:8080/v1
+#
+# Scale workers:
+#   EMBED_REPLICAS=8 docker compose -f docker-compose.yml -f docker-compose.embedding.yml up -d
+#
+# Offline / air-gapped:
+#   cd embedding && python download_model.py
+#   TRANSFORMERS_OFFLINE=1 docker compose -f docker-compose.yml -f docker-compose.embedding.yml up -d
+# =============================================================================
+
+services:
+  embedding-worker:
+    build:
+      context: ./embedding
+      dockerfile: Dockerfile
+    image: deep-research-embedding:latest
+    deploy:
+      replicas: ${EMBED_REPLICAS:-4}
+      resources:
+        limits:
+          memory: ${EMBED_MEMORY_LIMIT:-4G}
+          cpus: ${EMBED_CPU_LIMIT:-4.0}
+        reservations:
+          memory: ${EMBED_MEMORY_RESERVE:-1G}
+          cpus: ${EMBED_CPU_RESERVE:-0.5}
+          # Uncomment for NVIDIA GPU
+          # devices:
+          #   - driver: nvidia
+          #     count: 1
+          #     capabilities: [gpu]
+    environment:
+      - EMBED_MODEL=${EMBED_MODEL:-BAAI/bge-m3}
+      - EMBED_DEVICE=${EMBED_DEVICE:-auto}
+      - EMBED_BATCH_SIZE=${EMBED_BATCH_SIZE:-64}
+      - EMBED_MAX_TOKENS=8192
+      - HF_HOME=/models/huggingface
+      - SENTENCE_TRANSFORMERS_HOME=/models/huggingface
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=${EMBED_LOG_LEVEL:-INFO}
+    volumes:
+      - ./data/embedding_models:/models/huggingface
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 10s
+      start_period: 120s
+      retries: 5
+    restart: unless-stopped
+
+  embedding-lb:
+    image: nginx:alpine
+    ports:
+      - "${EMBED_LB_PORT:-8080}:8080"
+    volumes:
+      - ./embedding/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      embedding-worker:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  backend:
+    environment:
+      - EMBED_BASE_URL=${EMBED_BASE_URL:-http://embedding-lb:8080/v1}
+    depends_on:
+      embedding-lb:
+        condition: service_healthy

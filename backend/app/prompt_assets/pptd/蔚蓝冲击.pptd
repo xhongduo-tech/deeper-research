@@ -1,0 +1,14 @@
+name: 蔚蓝冲击
+category: 科技发布会
+palette: deep navy and midnight blue backgrounds, electric blue accents, white high-contrast text
+typography: bold launch title 32-40pt, compact technical body 14-17pt, large metric numerals 48-72pt
+layouts:
+  - product launch cover with strong title block and small event subtitle
+  - feature reveal with left narrative and right hero visual placeholder
+  - metric impact slide with blue divider lines and glowing accent chips
+  - roadmap or architecture slide using horizontal flow
+  - closing slide with clear call-to-action
+content_rules:
+  - use this file only for visual style
+  - avoid decorative blue gradients that reduce text contrast
+  - do not use demo product-launch facts

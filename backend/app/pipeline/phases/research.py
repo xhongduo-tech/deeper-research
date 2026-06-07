@@ -116,6 +116,26 @@ class ResearchPhase:
             except Exception as exc:
                 logger.warning("[RESEARCH] RAG failed for '%s': %s", section_title, exc)
 
+        # 2a. LLM-OS: Knowledge Triad Coordinator（本体论→图谱→向量三角协同）
+        if ctx.intent and (ctx.intent.uses_ontology() or ctx.intent.uses_vector_rag()):
+            try:
+                from app.knowledge.triad_coordinator import TriadCoordinator
+                coordinator = TriadCoordinator(ctx.db)
+                triad = await coordinator.retrieve(
+                    query=hyde_query,
+                    intent=ctx.intent,
+                    kb_ids=ctx.kb_ids or None,
+                    top_k=6,
+                )
+                triad_block = triad.build_context_block()
+                if triad_block and len(triad_block) > 100:
+                    evidence_parts.append(f"【知识三角检索】\n{triad_block}")
+                # 保存到 ctx 供后续章节复用
+                if not ctx.triad_result:
+                    ctx.triad_result = triad
+            except Exception as exc:
+                logger.debug("[RESEARCH] Triad coordinator failed (non-fatal): %s", exc)
+
         # 2b. Official data source routing — fan out to structured knowledge sources
         # based on domain hints extracted from section content_type and title keywords.
         try:

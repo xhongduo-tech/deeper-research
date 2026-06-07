@@ -1,0 +1,79 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: deep-research-backend:latest
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      # ── 基础设施（必须在 .env 中配置，不可通过 admin 界面修改）────────────────
+      - DATABASE_URL=sqlite+aiosqlite:///./data/app.db
+      - REDIS_URL=redis://redis:6379
+      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
+      - UPLOAD_DIR=/app/uploads
+      - TEMPLATE_DIR=/app/templates
+      - SANDBOX_WORKSPACE=/app/sandbox_workspace
+      - DATA_DIR=/app/data
+      # ── 初始管理员（仅首次启动生效）──────────────────────────────────────────
+      - DEFAULT_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME:-admin}
+      - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-admin123456}
+      # ── 以下项目通过 /admin 界面配置，此处仅作容器启动兜底默认值 ─────────────
+      # 模型地址、RAG 参数、功能开关等在 admin 界面写入数据库后优先生效。
+      - DEFAULT_LLM_BASE_URL=${DEFAULT_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      - DEFAULT_LLM_MODEL=${DEFAULT_LLM_MODEL:-qwen2.5:72b}
+      - DEFAULT_LLM_API_KEY=${DEFAULT_LLM_API_KEY:-ollama}
+      - RAG_EMBED_MODEL=${RAG_EMBED_MODEL:-nomic-embed-text}
+      - SANDBOX_TIMEOUT=${SANDBOX_TIMEOUT:-30}
+      - MAX_WORKERS=${MAX_WORKERS:-4}
+    volumes:
+      - ./data/uploads:/app/uploads
+      - ./data/templates:/app/templates
+      - ./data/sandbox:/app/sandbox_workspace
+      # data/db maps to /app/data — contains SQLite DB + DuckDB structured_dbs/
+      - ./data/db:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 8s
+      start_period: 40s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: deep-research-frontend:latest
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  app-network:
+    driver: bridge

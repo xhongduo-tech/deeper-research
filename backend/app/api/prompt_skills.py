@@ -1,0 +1,1737 @@
+"""Prompt skill / template asset API.
+
+These endpoints expose the Markdown prompt assets that drive generation quality.
+They are intentionally separate from executable offline skills: a prompt skill is
+an editable authoring contract loaded by the format-adaptive pipeline at run time.
+
+User templates are isolated under data/user_skills/{user_id}/ so they survive
+browser cache clears and can be shared across devices.
+"""
+from __future__ import annotations
+
+import logging
+import re
+import tempfile
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+
+from app.middleware.auth_middleware import get_current_user
+from app.models.user import User
+from app.services.file_parser import extract_text
+from app.services.llm_service import chat
+from app.services.prompt_assets import ASSET_DIR, SKILL_PURPOSES
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/prompt-skills", tags=["prompt-skills"])
+
+SKILLS_DIR = ASSET_DIR / "skills"
+USER_SKILLS_DIR = Path(settings.user_skills_dir)
+SAFE_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,79}$")
+
+
+def _slugify(value: str, fallback: str = "custom-document-skill") -> str:
+    value = (value or "").strip().lower()
+    value = re.sub(r"[^a-z0-9一-鿿_-]+", "-", value)
+    value = re.sub(r"-{2,}", "-", value).strip("-_")
+    if not value:
+        value = fallback
+    # Strip CJK for filesystem safety; build_skill_from_document handles empty fallback.
+    value = re.sub(r"[一-鿿]+", "", value)
+    value = re.sub(r"-{2,}", "-", value).strip("-_")
+    return value[:64] or fallback
+
+
+def _user_skill_dir(user_id: int, name: str) -> Path:
+    if not SAFE_NAME.match(name or ""):
+        raise HTTPException(status_code=400, detail="非法模板名称")
+    base = (USER_SKILLS_DIR / str(user_id)).resolve()
+    path = (base / name).resolve()
+    if not str(path).startswith(str(base)):
+        raise HTTPException(status_code=400, detail="非法模板路径")
+    return path
+
+
+def _official_skill_dir(name: str) -> Path:
+    if not SAFE_NAME.match(name or ""):
+        raise HTTPException(status_code=400, detail="非法模板名称")
+    path = (SKILLS_DIR / name).resolve()
+    if not str(path).startswith(str(SKILLS_DIR.resolve())):
+        raise HTTPException(status_code=400, detail="非法模板路径")
+    return path
+
+
+def _find_skill_path(name: str, user_id: int | None = None) -> tuple[Path, str] | None:
+    """Return (path, source) where source is 'user' or 'official'.
+    User skills take precedence over official skills with the same name.
+    """
+    # 1. Try user-specific skill first
+    if user_id is not None:
+        user_path = _user_skill_dir(user_id, name) / "SKILL.md"
+        if user_path.exists():
+            return user_path, "user"
+    # 2. Fall back to official skill
+    official_path = _official_skill_dir(name) / "SKILL.md"
+    if official_path.exists():
+        return official_path, "official"
+    return None
+
+
+def _read_skill(name: str, user_id: int | None = None) -> tuple[Path, str, str]:
+    result = _find_skill_path(name, user_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="模板不存在")
+    path, source = result
+    return path, path.read_text(encoding="utf-8"), source
+
+
+def _frontmatter_value(content: str, key: str) -> str:
+    if content.startswith("---"):
+        parts = content.split("---", 2)
+        block = parts[1] if len(parts) >= 3 else content
+    else:
+        block = content
+
+    lines = block.splitlines()
+    key_re = re.compile(rf"^\s*{re.escape(key)}:\s*(.*)$")
+    next_key_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*:\s*")
+    for idx, line in enumerate(lines):
+        match = key_re.match(line)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if value in {">", "|", ">-", "|-", ">+", "|+"}:
+            collected: list[str] = []
+            for child in lines[idx + 1 :]:
+                if child.strip() == "":
+                    if collected:
+                        collected.append("")
+                    continue
+                if next_key_re.match(child):
+                    break
+                if not child.startswith((" ", "\t")):
+                    break
+                collected.append(child.strip())
+            if value.startswith("|"):
+                return "\n".join(collected).strip()
+            return re.sub(r"\s+", " ", " ".join(collected)).strip()
+        return value.strip('"').strip("'").strip()
+    return ""
+
+
+def _has_skill_field(content: str, key: str) -> bool:
+    if not content:
+        return False
+    if content.startswith("---"):
+        parts = content.split("---", 2)
+        if len(parts) >= 3:
+            return bool(re.search(rf"(?m)^\s*{re.escape(key)}\s*:", parts[1]))
+    return bool(re.search(rf"(?m)^\s*{re.escape(key)}\s*:", content))
+
+
+def _has_workflow_section(content: str) -> bool:
+    """Accept English and Chinese workflow headings generated by the analyzer."""
+    if not content:
+        return False
+    return bool(re.search(
+        r"(?im)^#{2,4}\s*(?:workflow|steps|工作流程|流程|执行流程|生成流程)(?:\s*[（(][^)）]*(?:workflow|steps)[^)）]*[)）])?\s*$",
+        content,
+    ))
+
+
+def _ensure_workflow_section(content: str) -> str:
+    if _has_workflow_section(content):
+        return content
+    fallback = """
+
+## 工作流程（Workflow）
+
+1. **锁定意图** — 保留用户原始问题、已选模板、上传文件和预期交付物。
+2. **分离来源** — 当前任务文件提供事实证据；参考模板仅提供结构、风格和格式约束。
+3. **规划结构** — 按模板结构生成模块计划，含论点、篇幅、表格和图示需求。
+4. **按结构生成** — 严格匹配标题层级、段落密度、表格样式、图示布局和写作语气。
+5. **质量核验** — 检查事实来源、结构完整性、格式一致性和隐私风险后再交付。
+"""
+    return content.rstrip() + fallback
+
+
+def _summarize_skill(name: str, content: str, source: str = "official") -> dict:
+    title_match = re.search(r"^#\s+(.+)$", content, flags=re.MULTILINE)
+    owner, purpose = SKILL_PURPOSES.get(name, ("Li Bai", "用户自定义文档生成能力"))
+    refs = re.findall(r"`(references/[^`]+\.md)`", content)
+    # Extract detected style if present
+    style_match = re.search(r"\|\s*Detected style\s*\|\s*(\S+)\s*\|", content)
+    detected_style = style_match.group(1) if style_match else ""
+    return {
+        "name": name,
+        "title": title_match.group(1).strip() if title_match else name,
+        "description": _frontmatter_value(content, "description") or purpose,
+        "owner": owner,
+        "purpose": purpose,
+        "references": list(dict.fromkeys(refs)),
+        "source": source,
+        "custom": source == "user",
+        "detected_style": detected_style,
+    }
+
+
+@router.get("")
+async def list_prompt_skills(current_user: User = Depends(get_current_user)):
+    """List all skills — official + user-specific. User skills shadow official ones."""
+    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    USER_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+
+    skills_map: dict[str, dict] = {}
+
+    # 1. Scan official skills
+    for skill_md in sorted(SKILLS_DIR.glob("*/SKILL.md")):
+        name = skill_md.parent.name
+        try:
+            content = skill_md.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        skills_map[name] = _summarize_skill(name, content, source="official")
+
+    # 2. Scan user skills (shadow official)
+    user_dir = USER_SKILLS_DIR / str(current_user.id)
+    if user_dir.exists():
+        for skill_md in sorted(user_dir.glob("*/SKILL.md")):
+            name = skill_md.parent.name
+            try:
+                content = skill_md.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            skills_map[name] = _summarize_skill(name, content, source="user")
+
+    return {"skills": list(skills_map.values())}
+
+
+@router.get("/{name}")
+async def get_prompt_skill(name: str, current_user: User = Depends(get_current_user)):
+    path, content, source = _read_skill(name, current_user.id)
+    return {
+        "name": name,
+        "path": str(path),
+        "content": content,
+        "source": source,
+        **_summarize_skill(name, content, source),
+    }
+
+
+@router.put("/{name}")
+async def save_prompt_skill(
+    name: str,
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+):
+    content = str(payload.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="模板内容不能为空")
+    if not _has_skill_field(content, "name"):
+        raise HTTPException(status_code=400, detail="模板必须包含 name 字段")
+    if not _has_skill_field(content, "description"):
+        raise HTTPException(status_code=400, detail="模板必须包含 description 字段")
+    if not _has_workflow_section(content):
+        raise HTTPException(status_code=400, detail="模板必须包含 Workflow/Steps 流程段落")
+
+    # Ensure user- prefix for user-created skills to avoid collision
+    safe_name = name
+    if not safe_name.startswith("user-") and not safe_name.startswith("custom-"):
+        safe_name = f"user-{safe_name}"
+
+    skill_dir = _user_skill_dir(current_user.id, safe_name)
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    path = skill_dir / "SKILL.md"
+    path.write_text(content + "\n", encoding="utf-8")
+    return {"message": "模板已保存", "name": safe_name, "path": str(path), "source": "user"}
+
+
+@router.delete("/{name}")
+async def delete_prompt_skill(
+    name: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a user-specific skill. Official skills cannot be deleted."""
+    skill_dir = _user_skill_dir(current_user.id, name)
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.exists():
+        raise HTTPException(status_code=404, detail="用户模板不存在或无权删除")
+    # Remove directory
+    import shutil
+    shutil.rmtree(skill_dir, ignore_errors=True)
+    return {"message": "模板已删除", "name": name}
+
+
+@router.post("/analyze")
+async def analyze_document_to_skill(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    suffix = Path(file.filename or "").suffix.lower() or ".txt"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        text = await extract_text(str(tmp_path), suffix.lstrip("."))
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    filename = file.filename or "参考文档"
+    # Prefer LLM-based deep understanding; fall back to regex-only on failure
+    try:
+        suggested_name, content = await build_skill_from_document_llm(filename, text)
+    except Exception as exc:
+        logger.warning("LLM skill generation failed (%s), falling back to regex", exc)
+        suggested_name, content = build_skill_from_document(filename, text)
+
+    return {
+        "name": suggested_name,
+        "content": content,
+        "analysis": analyze_document_shape(text),
+    }
+
+
+def _detect_file_format(text: str, filename: str = "") -> str:
+    """Detect the originating file format from text markers and filename."""
+    ext = Path(filename).suffix.lower()
+    if ext in (".pptx", ".ppt"):
+        return "pptx"
+    if ext in (".docx", ".doc"):
+        return "docx"
+    if ext in (".xlsx", ".xls"):
+        return "xlsx"
+    if ext == ".pdf":
+        return "pdf"
+    # Heuristic from content markers
+    if re.search(r"--- Slide \d+ ---|\[PPTX_TOTAL_CHARTS:", text):
+        return "pptx"
+    if re.search(r"--- Sheet:", text):
+        return "xlsx"
+    if re.search(r"\[PDF_TABLE \d+\]|--- Page \d+ ---", text):
+        return "pdf"
+    return "docx"
+
+
+def _extract_pptx_signals(text: str) -> dict:
+    """Extract PPTX-specific structural signals from parsed text."""
+    slide_headers = re.findall(r"--- Slide (\d+) ---", text)
+    slide_count = int(slide_headers[-1]) if slide_headers else 0
+
+    chart_markers = re.findall(r"\[CHART:[^\]]+\]", text)
+    chart_details: list[dict] = []
+    for m in chart_markers:
+        entry: dict = {}
+        t = re.search(r"type=([^|\]]+)", m)
+        if t:
+            entry["type"] = t.group(1).strip()
+        ti = re.search(r"title=([^|\]]+)", m)
+        if ti:
+            entry["title"] = ti.group(1).strip()
+        d = re.search(r"data=([^|\]]+)", m)
+        if d:
+            entry["data"] = d.group(1).strip()[:80]
+        cat = re.search(r"categories=\[([^\]]+)\]", m)
+        if cat:
+            entry["categories"] = cat.group(1).strip()[:60]
+        if entry:
+            chart_details.append(entry)
+
+    image_markers = re.findall(r"\[IMAGE:\s*([^\]]+)\]", text)
+    notes_markers = re.findall(r"\[NOTES:\s*([^\]]{0,120})\]", text)
+
+    # Slide text density
+    slide_texts: list[str] = re.split(r"--- Slide \d+ ---", text)
+    avg_slide_len = int(sum(len(s) for s in slide_texts[1:]) / max(len(slide_texts) - 1, 1))
+
+    return {
+        "slide_count": slide_count,
+        "chart_count": len(chart_markers),
+        "chart_details": chart_details[:8],
+        "image_count": len(image_markers),
+        "notes_count": len(notes_markers),
+        "notes_samples": notes_markers[:3],
+        "avg_slide_chars": avg_slide_len,
+        "layout_style": (
+            "图表密集型（每页含大量数据可视化）" if len(chart_markers) > slide_count * 0.4
+            else "图文并茂型" if len(image_markers) > slide_count * 0.3
+            else "文字为主型"
+        ),
+    }
+
+
+def _extract_xlsx_signals(text: str) -> dict:
+    """Extract XLSX-specific structural signals."""
+    sheets = re.findall(r"--- Sheet: (.+?) ---", text)
+    chart_markers = re.findall(r"\[CHART:[^\]]+\]", text)
+    row_counts = re.findall(r"rows=(\d+)", text)
+    col_counts = re.findall(r"columns=(\d+)", text)
+    schema_hints = re.findall(r"schema=(.+?)(?:\n|$)", text)
+    numeric_profile = re.findall(r"--- Numeric Profile ---\n(.+?)(?:---|$)", text, re.DOTALL)
+
+    return {
+        "sheet_names": sheets,
+        "sheet_count": len(sheets),
+        "chart_count": len(chart_markers),
+        "row_count": int(row_counts[0]) if row_counts else 0,
+        "col_count": int(col_counts[0]) if col_counts else 0,
+        "schema_sample": schema_hints[0][:200] if schema_hints else "",
+        "numeric_summary": numeric_profile[0][:300].strip() if numeric_profile else "",
+    }
+
+
+def _smart_excerpt(text: str, max_chars: int = 8000, filename: str = "") -> str:
+    """Return the most structurally informative slice of document text.
+
+    File-format-aware: PPTX excerpts prioritize slide text + chart markers;
+    XLSX excerpts prioritize schema + numeric profile; PDF/DOCX use heading
+    + section intro sampling. Total kept under max_chars.
+    """
+    fmt = _detect_file_format(text, filename)
+    lines = text.splitlines()
+
+    # ── PPTX: slide-by-slide sampling ──────────────────────────────────────
+    if fmt == "pptx":
+        parts: list[str] = []
+        total = 0
+        slides = re.split(r"(--- Slide \d+ ---)", text)
+        # interleave header + body
+        for i in range(1, len(slides), 2):
+            header = slides[i].strip()
+            body = slides[i + 1].strip() if i + 1 < len(slides) else ""
+            # Keep all chart markers intact; truncate prose
+            chart_lines = [l for l in body.splitlines() if l.strip().startswith("[CHART") or l.strip().startswith("[IMAGE")]
+            prose_lines = [l for l in body.splitlines() if not l.strip().startswith("[CHART") and not l.strip().startswith("[IMAGE")]
+            prose_sample = " ".join(prose_lines)[:200]
+            block = f"\n{header}\n" + prose_sample + "\n" + "\n".join(chart_lines)
+            if total + len(block) > max_chars:
+                break
+            parts.append(block)
+            total += len(block)
+        return "\n".join(parts)
+
+    # ── XLSX: schema + sample rows ─────────────────────────────────────────
+    if fmt == "xlsx":
+        return text[:max_chars]
+
+    # ── PDF / DOCX: structured sampling ────────────────────────────────────
+
+    # Opening block
+    intro_chars = 0
+    intro_lines: list[str] = []
+    for line in lines:
+        if intro_chars >= 2000:
+            break
+        intro_lines.append(line)
+        intro_chars += len(line) + 1
+
+    _heading_re = re.compile(
+        r"^(\d+(?:\.\d+)*[、.\s]|第[一二三四五六七八九十]+[章节部分]"
+        r"|#{1,4}\s|[一二三四五六七八九十]+[、.])"
+    )
+    heading_lines = [l for l in lines if _heading_re.match(l.strip())]
+
+    # PDF table blocks (preserve full markdown table, truncated)
+    pdf_table_blocks: list[str] = []
+    in_table = False
+    table_buf: list[str] = []
+    for line in lines:
+        if re.match(r"\[PDF_TABLE \d+\]", line.strip()):
+            in_table = True
+            table_buf = [line.strip()]
+        elif in_table:
+            if line.strip().startswith("|"):
+                table_buf.append(line.strip())
+                if len(table_buf) > 8:  # cap at 8 rows per table
+                    in_table = False
+                    pdf_table_blocks.append("\n".join(table_buf))
+                    table_buf = []
+            else:
+                in_table = False
+                if table_buf:
+                    pdf_table_blocks.append("\n".join(table_buf))
+                    table_buf = []
+
+    table_headers: list[str] = []
+    for i, line in enumerate(lines):
+        if (
+            line.strip().startswith("|")
+            and i + 1 < len(lines)
+            and re.match(r"^\|[-| :]+\|$", lines[i + 1].strip())
+        ):
+            table_headers.append(line.strip())
+
+    captions = [
+        l.strip()
+        for l in lines
+        if re.search(r"(?:图|表|Figure|Table)\s*[\d一二三四五六七八九十]+[：:：]?\s*\S", l.strip())
+    ]
+
+    # Embedded chart markers
+    chart_marker_lines = [l.strip() for l in lines if "[CHART:" in l or "[EMBEDDED_CHARTS:" in l]
+
+    section_intros: list[str] = []
+    collecting = False
+    para_buf: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        is_h1 = bool(re.match(
+            r"^(\d+[、.\s]|第[一二三四五六七八九十]+[章节部分]|#\s|[一二三四五六七八九十]+[、.])",
+            stripped,
+        ))
+        if is_h1:
+            if para_buf:
+                section_intros.append(" ".join(para_buf))
+                para_buf = []
+            section_intros.append(stripped)
+            collecting = True
+        elif collecting and stripped and not stripped.startswith("|"):
+            para_buf.append(stripped)
+            if len(" ".join(para_buf)) > 350:
+                section_intros.append(" ".join(para_buf))
+                para_buf = []
+                collecting = False
+        elif not stripped and para_buf:
+            section_intros.append(" ".join(para_buf))
+            para_buf = []
+            collecting = False
+    if para_buf:
+        section_intros.append(" ".join(para_buf))
+
+    blocks = [
+        ("文档开头（含摘要/背景/简介）", intro_lines),
+        ("章节结构（所有标题）", heading_lines),
+        ("嵌入图表信息", chart_marker_lines),
+        ("PDF提取表格（前几行）", pdf_table_blocks),
+        ("表格列头（每张表的第一行）", table_headers),
+        ("图表说明（所有图表标题）", captions),
+        ("各章节首段（内容主题）", section_intros),
+    ]
+    result_parts: list[str] = []
+    total = 0
+    for label, items in blocks:
+        if not items:
+            continue
+        block = f"\n【{label}】\n" + "\n".join(str(x) for x in items)
+        if total + len(block) > max_chars:
+            remaining = max_chars - total
+            if remaining > 200:
+                result_parts.append(block[:remaining])
+            break
+        result_parts.append(block)
+        total += len(block)
+
+    return "\n".join(result_parts)
+
+
+_SKILL_SYSTEM = """\
+你是“文档宏观模板 DNA 解析引擎”。用户会给你一份参考文档的提取内容（可能不完整），\
+你的任务不是复述这份文档的具体业务事实，而是剥离事实、数字、人名、机构名和结论，\
+抽象出可复用的文档骨架、叙事逻辑、视觉证据位置、目标读者和格式约束，输出 SKILL.md。
+
+核心原则：抓大放小，高度抽象。
+1. 宏观内容结构：提取目录树逻辑、章节职责、模块顺序和起承转合，不保留具体业务主体。
+2. 叙事框架：总结文档如何从背景/问题进入证据/分析，再到结论/行动。
+3. 图片作用力分析：只描述图片/图表的位置、功能和证明关系，例如“用趋势图支撑增长判断”，不得提取图内具体数字。
+4. 受众与意图推断：推断目标读者、决策场景、关注点和使用目的。
+5. 事实隔离：参考文档只提供结构和风格，不得成为新文档的事实来源；具体营收、KPI、客户名、地点、年份等必须抽象为角色或占位。
+6. 格式规范：保留标题层级、段落密度、表格类型、图示密度、引用/脚注/页眉页脚等可复用规范。
+7. 禁止输出“照抄原文内容”“具体数字样本”“具体公司/机构/人员结论”。
+
+只输出 Markdown，不加任何额外说明。\
+"""
+
+
+async def build_skill_from_document_llm(filename: str, text: str) -> tuple[str, str]:
+    """Generate a document-specific SKILL.md using LLM deep comprehension.
+
+    The LLM reads an intelligently sampled excerpt of the document and produces
+    a skill card that captures the actual content themes, structure, table column
+    patterns, figure layout, and writing style of *this specific document* —
+    not a generic template.
+    """
+    import time as _time
+
+    fmt = _detect_file_format(text, filename)
+    style = infer_document_style(text)
+    base = Path(filename).stem or style
+    raw_slug = _slugify(base)
+    if not raw_slug or raw_slug in ("custom", "custom-document-skill"):
+        raw_slug = f"{style}-{int(_time.time()) % 100000}"
+    slug = f"user-{raw_slug}"
+
+    # Pre-analysis signals to help the LLM
+    shape = analyze_document_shape(text)
+    table_p = _extract_table_patterns(text)
+    image_p = _extract_image_patterns(text)
+    density = _extract_paragraph_density(text)
+    macro = _build_macro_template_profile(text)
+    macro_structure = macro["macro_structure"]
+    narrative = macro["narrative_framework"]
+    audience = macro["audience_intent"]
+    visual_force_md = "\n".join(
+        f"  - {item['type']}：{item['placement']}；{item['function']}；{item['data_policy']}"
+        for item in macro["visual_force"][:6]
+    ) or "  - 未检测到稳定图示模式；如生成任务需要，可按章节证据需求补充图表。"
+    section_skeleton_md = "\n".join(
+        f"  - {item}" for item in macro_structure["section_skeleton"][:10]
+    ) or "  - 按用户任务动态抽象章节职责。"
+    narrative_arc_md = "\n".join(f"  - {item}" for item in narrative["arc"])
+    concerns_md = "、".join(audience["core_concerns"])
+
+    # Format-specific deep signals
+    fmt_signal_block = ""
+    if fmt == "pptx":
+        pptx = _extract_pptx_signals(text)
+        chart_detail_md = ""
+        if pptx["chart_details"]:
+            rows = []
+            for cd in pptx["chart_details"][:6]:
+                row = f"  - 类型={cd.get('type','?')}"
+                if cd.get("title"):
+                    row += f" | 标题={cd['title']}"
+                if cd.get("categories"):
+                    row += f" | 类别={cd['categories']}"
+                if cd.get("data"):
+                    row += f" | 数据样本={cd['data'][:60]}"
+                rows.append(row)
+            chart_detail_md = "\n".join(rows)
+        notes_md = "\n  ".join(pptx["notes_samples"]) if pptx["notes_samples"] else "无"
+        fmt_signal_block = f"""
+**【PPTX 专项信号】**
+- 幻灯片总数：{pptx['slide_count']} 页
+- 内嵌图表数：{pptx['chart_count']}（图表明细：\n{chart_detail_md or '  无'}）
+- 图片数量：{pptx['image_count']}
+- 含演讲备注：{pptx['notes_count']} 页（样本：{notes_md}）
+- 平均每页字符：{pptx['avg_slide_chars']}
+- 内容布局风格：{pptx['layout_style']}
+"""
+    elif fmt == "xlsx":
+        xlsx = _extract_xlsx_signals(text)
+        fmt_signal_block = f"""
+**【XLSX 专项信号】**
+- 工作表：{', '.join(xlsx['sheet_names']) or '未检测到'}（共 {xlsx['sheet_count']} 张）
+- 数据规模：约 {xlsx['row_count']} 行 × {xlsx['col_count']} 列
+- 字段类型：{xlsx['schema_sample'][:120] or '未检测到'}
+- 数值概览：{xlsx['numeric_summary'][:200] or '无'}
+- 内嵌图表数：{xlsx['chart_count']}
+"""
+    elif fmt == "pdf":
+        pdf_tables = table_p.get("pdf_extracted_tables", 0)
+        fmt_signal_block = f"""
+**【PDF 专项信号】**
+- 提取表格数：{pdf_tables}
+- 图片计数：{image_p.get('embedded_image_count', 0)}
+- 文字型内容密度：{density['style']}
+"""
+
+    # Build chart reconstruction hint for LLM
+    chart_types_str = ", ".join(image_p["figure_types"]) if image_p["figure_types"] else "待分析"
+    chart_count_str = str(image_p["embedded_chart_count"] or image_p["figure_count"])
+
+    excerpt = _strip_template_specifics(_smart_excerpt(text, max_chars=8000, filename=filename))
+    macro_signal_block = f"""
+**【宏观模板 DNA（必须优先遵守）】**
+- 模板类型：{macro_structure["style"]}
+- 结构策略：{macro_structure["structure_policy"]}
+- 抽象章节骨架：
+{section_skeleton_md}
+- 叙事框架：{narrative["name"]}
+- 起承转合：
+{narrative_arc_md}
+- 目标读者：{audience["target_reader"]}
+- 使用意图：{audience["intent"]}
+- 核心关注点：{concerns_md}
+- 图片/图表作用力：
+{visual_force_md}
+- 事实隔离：复用 {", ".join(macro["business_data_policy"]["reuse"])}；禁止复用 {", ".join(macro["business_data_policy"]["forbid"])}。
+"""
+
+    # Format-specific SKILL template additions
+    if fmt == "pptx":
+        extra_sections = """
+## PPT 幻灯片规范（Slide Layout）
+
+[基于检测到的幻灯片结构描述：
+- 总页数与页面用途分布（封面/目录/内容/总结）
+- 每页主要内容模式（纯文字/图表页/图文混排/全图页）
+- 图表类型与位置规律（全页图/右半页/嵌入正文）
+- 演讲备注的存在与格式（若有）
+- 标题字数规律（短标题≤10字/长标题≤25字）]
+
+## 数据可视化规范（Data Visualization）
+
+[基于文档中实际图表描述，逐图说明：
+- 图表类型（折线/柱状/饼图/雷达/散点等）
+- 数据维度（X轴/Y轴/系列名）
+- 标注样式（数值标注/百分比/趋势线）
+- 配色倾向（单色系/多色系/渐变）
+生成时用 [CHART: type=... | title=... | data=...] 格式占位。]
+"""
+    elif fmt == "xlsx":
+        extra_sections = """
+## 数据表规范（Data Table Spec）
+
+[基于工作表结构描述：
+- 各 Sheet 的用途与数据类型
+- 关键字段列表（字段名、数据类型、单位）
+- 数值精度与格式（小数位/百分比/金额等）
+- 汇总行/合计行的位置与计算逻辑
+- 条件格式规则（若有）]
+
+## 图表生成规范（Chart Generation）
+
+[基于检测到的图表描述：
+- 图表类型与对应数据列
+- 图表标题命名规律
+- 坐标轴标签与单位
+生成时用 [CHART: type=... | title=... | series=...] 格式占位。]
+"""
+    else:
+        extra_sections = """
+## 图示与视觉布局规范（Figure & Visual Layout）
+
+[基于文档中实际图示描述：
+- 每种图示类型（流程图/架构图/折线图/饼图/柱状图/概念示意图等）及出现次数
+- 图示与正文的布局关系（图文穿插/段后插图/独立页面）
+- 图注样式和位置
+- 视觉密度（每N段落出现一张图）
+若无图示，明确说明"本文档无插图"。]
+"""
+
+    user_msg = f"""\
+请深度分析以下参考文档，生成一份定制化 SKILL.md 技能规范。
+
+**文件名：** {filename}
+**文件格式：** {fmt.upper()}
+**预检测信号（供参考，以实际内容为准）：**
+- 推断文档类型：{style}
+- 章节/标题数量：{shape["heading_count"]}
+- 检测到表格数：{table_p["table_count"]}（均值 {table_p["avg_column_count"]} 列，类型：{", ".join(table_p["table_types_detected"]) or "待分析"}）
+- 检测到图表数：{chart_count_str}（类型：{chart_types_str}，布局：{image_p["layout_hint"]}）
+- 段落风格：{density["style"]}（均值 {density["avg_chars"]} 字/段）
+{macro_signal_block}
+{fmt_signal_block}
+**文档提取内容（结构性采样，已尽量脱敏；只能用于抽象模板，不得作为事实复用）：**
+---
+{excerpt}
+---
+
+请按以下格式输出完整 SKILL.md。所有“规律”必须从参考文档抽象得来，但不得保留具体业务实体、具体数字、具体年份结论或原文业务判断：
+
+---
+name: {slug}
+description: >
+  [一句话描述：这类文档的可复用用途、结构特征和目标读者，不超过80字；不要写具体机构/项目/数字]
+---
+
+# [抽象文档类型名称] · 定制{'演示' if fmt == 'pptx' else '数据' if fmt == 'xlsx' else '文档'}模板
+
+[2-3句说明这类文档的核心用途、目标读者和可复用价值；不得复述原文业务事实]
+
+## 宏观内容结构（Macro Structure）
+
+[抽象说明目录树逻辑、模块职责、章节顺序和每部分在整体叙事中的功能。只能写“背景模块/证据模块/行动模块”等结构角色，不得写具体营收、机构、人名或原始结论。]
+
+## 叙事框架（Narrative Arc）
+
+[说明起承转合：如何开题、如何提出问题、如何组织证据、如何落到结论/行动；必须抽象为可复用写法。]
+
+## 受众与意图推断（Audience & Intent）
+
+[推断目标读者、使用场景、读者最关心的内容点和文档想促成的决策/理解。]
+
+## 结构蓝图（Structure Blueprint）
+
+[还原这份文档的{'幻灯片层级和每页职责' if fmt == 'pptx' else '工作表与字段职责' if fmt == 'xlsx' else '标题层级职责'}，用缩进表示层次；标题可保留结构语义，但具体主体/年份/数字必须抽象。]
+
+## 章节篇幅配比（Section Budgets）
+
+| {'模块/幻灯片范围' if fmt == 'pptx' else '工作表/数据域' if fmt == 'xlsx' else '章节'} | 估算{'页数' if fmt == 'pptx' else '字段数' if fmt == 'xlsx' else '字数'} | 占比 |
+|---|---|---|
+[根据各{'模块' if fmt == 'pptx' else '工作表' if fmt == 'xlsx' else '章节'}内容量估算，总占比100%]
+
+## 表格样式规范（Table Style）
+
+[基于文档中实际表格描述：
+- 列名角色样本（逐表列出，例如“指标/时间/责任/结果/说明”，不复用具体业务数字）
+- 每张表的类型（数据统计/对比分析/时间计划/清单说明等）
+- 标题位置（表上/表下）
+- 数据格式规律（百分比/金额/时间等）
+若无表格，明确说明"本文档无表格"。]
+{extra_sections}
+## 图片作用力分析（Visual Force）
+
+[逐类说明图片/图表在文档中的位置和功能：是证明趋势、对比差异、说明流程、建立氛围还是总结观点。不得提取图片内具体数字、地名、人名或机构名。]
+
+## 事实隔离规则（Business Data Firewall）
+
+- 参考文档只提供结构、语气、格式、图表功能和篇幅权重。
+- 禁止复用具体营收、KPI、百分比、年份判断、客户/机构/人员名称、原文结论。
+- 生成新文档时，事实必须来自用户本次输入或上传数据；缺失则向用户确认或标注假设。
+- 可使用占位角色：`[主体]`、`[时间范围]`、`[指标]`、`[证据图]`、`[行动计划]`。
+
+## 写作风格规范（Writing Style）
+
+- **人称视角**：[第一人称"我们/本文"/第三人称客观/混合]
+- **语气基调**：[严谨学术/专业商务/正式公文/技术说明/叙述型]
+- **段落开头模式**：[结论先行/背景铺垫/数据开头/问题引导等，给具体示例]
+- **强调方式**：[粗体关键词/引号/数据高亮/无特殊强调]
+- **专业术语密度**：[高（每段多个专业词）/中/低]
+
+## 领域术语表（Domain Terminology）
+
+[列出这份文档的核心领域术语，10-15个，要求从文档中实际提取，不得编造]
+
+## 格式复刻规则（Format Mirroring Rules）
+
+[具体列出生成同类文档时必须遵守的格式约束：
+- {'标题/副标题字数范围、图表占位方式、配色倾向' if fmt == 'pptx' else '字段命名规范、数值精度、Sheet 顺序' if fmt == 'xlsx' else '标题编号风格、段落字数范围、图示占位方式'}]
+
+## 工作流程（Workflow）
+
+1. **锁定意图** — 保留用户原始问题和目标交付物，参考文档仅提供结构与风格约束。
+2. **分离来源** — 用户上传的当前任务文件提供事实证据；参考文档不得作为事实来源。
+3. **规划结构** — 按结构蓝图生成生产计划，含各模块论点、篇幅预算、图表需求。
+4. **路由子技能** — 证据读取→`data-grounding`；写作/生成→`{'ppt-authoring' if fmt == 'pptx' else 'excel-builder' if fmt == 'xlsx' else 'word-authoring'}`；核验→`qa-verification`。
+5. **按结构起草** — 严格匹配各模块篇幅预算、密度和风格。
+6. **精确复刻格式** — 标题层级·表格列数与类型·图示密度·引用格式·强调方式均需对齐。
+7. **审核与修复** — 检查：来源断言/模块缺失/表格溢出/格式不一致/隐私风险。
+
+## 技能交接（Skill Handoff）
+
+| 阶段 | 负责人 | 技能 | 预期输出 |
+|---|---|---|---|
+| 任务接收 | Elin | `intake-planner` | 动态任务队列 |
+| 证据读取 | Vera / Remy | `data-grounding` | 证据包与结构注释 |
+| 定制风格 | Vera | `{slug}` | 文档专属规则 |
+| 正文写作 | Li Bai | `{'ppt-authoring' if fmt == 'pptx' else 'excel-builder' if fmt == 'xlsx' else 'word-authoring'}` | 各{'页草稿' if fmt == 'pptx' else '表草稿' if fmt == 'xlsx' else '章草稿'} |
+| 质量核验 | Sage | `qa-verification` | 修复清单与最终通过 |
+
+## 质量检查清单（Quality Checklist）
+
+- [ ] 用户问题被直接回答，参考文档内容未混入目标文档。
+- [ ] {'幻灯片页数与布局' if fmt == 'pptx' else '工作表结构与字段' if fmt == 'xlsx' else '章节顺序'}与结构蓝图一致，偏差有说明。
+- [ ] {'每页标题长度合规，图表均以 [CHART: ...] 占位。' if fmt == 'pptx' else '数值精度、单位、字段名与参考文档一致。' if fmt == 'xlsx' else '段落密度匹配检测到的写作风格。'}
+- [ ] 表格列数、类型、标题位置与参考文档一致。
+- [ ] 图示密度与布局模式一致，已用 [CHART: ...] 或 [IMAGE: ...] 占位符标注。
+- [ ] 领域术语全文统一，未出现同义混用。
+- [ ] 最终内容通过 `qa-verification` 校验。
+"""
+
+    raw = await chat(
+        messages=[
+            {"role": "system", "content": _SKILL_SYSTEM},
+            {"role": "user", "content": user_msg},
+        ],
+        temperature=0.2,
+        max_tokens=5000,
+    )
+
+    # Ensure frontmatter is correct (LLM may hallucinate the name field)
+    content = _ensure_workflow_section(_normalize_llm_skill_output(raw.strip(), slug, filename))
+    return slug, content
+
+
+def _normalize_llm_skill_output(raw: str, expected_slug: str, filename: str) -> str:
+    """Ensure the LLM output has valid frontmatter with the correct slug name."""
+    # Strip markdown code fences if the LLM wrapped the output
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[^\n]*\n", "", raw)
+        raw = re.sub(r"\n```\s*$", "", raw)
+
+    # If frontmatter is present, enforce correct name field
+    if raw.startswith("---"):
+        parts = raw.split("---", 2)
+        if len(parts) >= 3:
+            fm = parts[1]
+            body = parts[2]
+            # Overwrite name field to match our computed slug
+            fm = re.sub(r"^name:.*$", f"name: {expected_slug}", fm, flags=re.MULTILINE)
+            # Ensure description is present
+            if "description:" not in fm:
+                fm += f'\ndescription: >\n  用户从参考文档「{filename}」自动生成的定制模板。\n'
+            return f"---{fm}---{body}"
+
+    # No frontmatter — prepend one
+    return (
+        f"---\nname: {expected_slug}\n"
+        f'description: >\n  用户从参考文档「{filename}」自动生成的定制模板。\n---\n\n'
+        + raw
+    )
+
+
+def analyze_document_shape(text: str) -> dict:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    heading_like = [line for line in lines if re.match(r"^(\d+(\.\d+)*[、.\s]|第[一二三四五六七八九十]+[章节部分]|[一二三四五六七八九十]+[、.])", line)]
+    table_count = len([line for line in lines if "|" in line or "\t" in line])
+    citation_count = len(re.findall(r"\[[0-9]{1,3}\]|参考文献|References", text or "", flags=re.I))
+    style = infer_document_style(text)
+    macro = _build_macro_template_profile(text)
+    return {
+        "line_count": len(lines),
+        "heading_count": len(heading_like),
+        "table_like_rows": table_count,
+        "citation_markers": citation_count,
+        "detected_style": style,
+        "outline_samples": heading_like[:8],
+        "macro_structure": macro["macro_structure"],
+        "narrative_framework": macro["narrative_framework"],
+        "visual_force": macro["visual_force"],
+        "audience_intent": macro["audience_intent"],
+        "writing_register": macro["writing_register"],
+        "argumentation_pattern": macro["argumentation_pattern"],
+        "business_data_policy": macro["business_data_policy"],
+    }
+
+
+def infer_document_style(text: str) -> str:
+    blob = text or ""
+    # ── Higher-specificity checks first ──
+    if re.search(r"执行摘要|研究方法|市场规模|竞争格局|趋势|建议", blob):
+        return "research-report"
+    if re.search(r"摘要|关键词|参考文献|实验|References|Abstract", blob, flags=re.I):
+        return "academic-paper"
+    if re.search(r"主送|发文字号|附件|落款|特此|通知|意见", blob):
+        return "official-document"
+    if re.search(r"甲方|乙方|违约责任|争议解决|保密|协议|合同", blob):
+        return "contract-document"
+    if re.search(r"用户故事|验收标准|版本规划|功能需求|非功能性", blob):
+        return "prd-document"
+    if re.search(r"培训|操作步骤|注意事项|SOP|实操|演练", blob):
+        return "training-manual"
+    if re.search(r"述职|绩效|KPI|完成情况|下阶段计划", blob):
+        return "performance-review"
+    return "custom-document"
+
+
+def _extract_outline_hierarchy(text: str) -> list[dict]:
+    """Extract heading hierarchy with depth inference."""
+    lines = text.splitlines()
+    headings = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"^(\d+(?:\.\d+)*)[、.\s]+(.+)$", line)
+        if m:
+            level = len(m.group(1).split("."))
+            headings.append({"level": min(level, 4), "text": m.group(2).strip()})
+            continue
+        m = re.match(r"^(第[一二三四五六七八九十]+[章节部分]|([一二三四五六七八九十]+)[、.])\s*(.+)$", line)
+        if m:
+            headings.append({"level": 1, "text": m.group(3).strip() if m.group(3) else m.group(1)})
+            continue
+        m = re.match(r"^(#{1,4})\s+(.+)$", line)
+        if m:
+            headings.append({"level": len(m.group(1)), "text": m.group(2).strip()})
+            continue
+    return headings[:20]
+
+
+def _extract_paragraph_density(text: str) -> dict:
+    """Analyze paragraph structure density."""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if not paragraphs:
+        return {"avg_chars": 0, "avg_sentences": 0, "style": "unknown"}
+    avg_chars = sum(len(p) for p in paragraphs) / len(paragraphs)
+    avg_sentences = sum(len(re.split(r"[。！？.!?]", p)) for p in paragraphs) / len(paragraphs)
+    if avg_chars > 300 and avg_sentences > 8:
+        style = "dense-academic"
+    elif avg_chars > 150:
+        style = "standard-formal"
+    elif avg_chars > 80:
+        style = "concise-business"
+    else:
+        style = "brief-bullet"
+    return {"avg_chars": round(avg_chars, 1), "avg_sentences": round(avg_sentences, 1), "style": style}
+
+
+def _extract_table_patterns(text: str) -> dict:
+    """Detect table patterns with column-level analysis."""
+    lines = text.splitlines()
+    table_rows = [l for l in lines if l.strip().startswith("|") and "|" in l.strip()[1:]]
+    tab_rows = [l for l in lines if l.count("\t") >= 2]
+
+    # Extract column headers from first markdown table found
+    header_samples: list[str] = []
+    table_types: list[str] = []
+    col_counts: list[int] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith("|") and "|" in line[1:]:
+            cols = [c.strip() for c in line.strip("|").split("|") if c.strip()]
+            col_counts.append(len(cols))
+            if not header_samples:
+                header_samples = cols[:6]
+            # Peek at next line for separator to confirm header row
+            if i + 1 < len(lines) and re.match(r"^\|[-| :]+\|$", lines[i + 1].strip()):
+                # Infer table type from column names
+                col_text = " ".join(cols).lower()
+                if re.search(r"指标|数值|金额|占比|增长|rate|amount|value", col_text):
+                    table_types.append("数据统计表")
+                elif re.search(r"序号|编号|项目|内容|说明|备注", col_text):
+                    table_types.append("清单说明表")
+                elif re.search(r"对比|差异|vs|比较|before|after", col_text):
+                    table_types.append("对比分析表")
+                elif re.search(r"时间|日期|阶段|计划|里程碑|deadline", col_text):
+                    table_types.append("时间计划表")
+                else:
+                    table_types.append("通用表格")
+            i += 2
+        else:
+            i += 1
+
+    # Also count PDF-extracted tables (from [PDF_TABLE N] markers)
+    pdf_table_markers = re.findall(r"\[PDF_TABLE\s+\d+\]", text)
+    pdf_table_count = len(pdf_table_markers)
+
+    captions = re.findall(r"(?:表|图|图表|Figure|Table)\s*[\d一二三四五六七八九十]+[：:：]?\s*[^\n]{0,40}", text)
+    caption_position = "表格下方" if re.search(r"\n表\s*[\d一]", text) else "表格上方或上下均有"
+
+    avg_cols = round(sum(col_counts) / len(col_counts), 1) if col_counts else 0
+    has_tables = bool(table_rows or tab_rows or pdf_table_count)
+
+    raw_table_count = len([l for l in table_rows if not re.match(r"^\|[-| :]+\|$", l.strip())])
+    total_table_count = max(raw_table_count, pdf_table_count)
+
+    return {
+        "has_markdown_tables": bool(table_rows),
+        "has_tabular_data": bool(tab_rows or pdf_table_count),
+        "table_count": total_table_count,
+        "pdf_extracted_tables": pdf_table_count,
+        "avg_column_count": avg_cols,
+        "column_header_samples": header_samples,
+        "table_types_detected": list(dict.fromkeys(table_types)) or (["通用表格"] if has_tables else []),
+        "caption_count": len(captions),
+        "caption_samples": [c.strip() for c in captions[:4]],
+        "caption_position": caption_position if has_tables else "无",
+    }
+
+
+def _extract_image_patterns(text: str) -> dict:
+    """Detect figure/image references and infer layout conventions from text."""
+    # Figure captions and references
+    fig_captions = re.findall(
+        r"(?:图|Figure|Fig\.?)\s*[\d一二三四五六七八九十]+[：:：]?\s*[^\n]{0,60}", text
+    )
+    # Markdown image syntax
+    md_images = re.findall(r"!\[([^\]]*)\]\([^)]+\)", text)
+    # Alt-text or description hints
+    desc_patterns = re.findall(r"(?:如图所示|见图|参见图|详见图|图示|示意图|流程图|架构图|组织图|路线图)", text)
+
+    # ── Structured markers emitted by file_parser (PPTX / DOCX / XLSX) ──
+    # [CHART: type=折线趋势图 | title=销售趋势 | series=A, B]
+    embedded_chart_markers = re.findall(r"\[CHART:[^\]]+\]", text)
+    # [IMAGE: shape_name] from PPTX, [EMBEDDED_IMAGES: count=N] from DOCX
+    embedded_image_markers = re.findall(r"\[IMAGE:[^\]]+\]", text)
+    embedded_image_counts = [
+        int(m) for m in re.findall(r"\[EMBEDDED_IMAGES:\s*count=(\d+)\]", text)
+    ] + [
+        int(m) for m in re.findall(r"\[PDF_IMAGES:\s*count=(\d+)\]", text)
+    ]
+    embedded_chart_counts = [
+        int(m) for m in re.findall(r"\[EMBEDDED_CHARTS:\s*count=(\d+)\]", text)
+    ]
+
+    # Totals from summary markers (avoid double-counting with individual markers)
+    total_marker_charts = sum(embedded_chart_counts) or len(embedded_chart_markers)
+    total_marker_images = sum(embedded_image_counts) or len(embedded_image_markers)
+
+    # Types from structured [CHART: type=...] markers
+    embedded_fig_types: list[str] = []
+    for marker in embedded_chart_markers:
+        m = re.search(r"type=([^|\]]+)", marker)
+        if m:
+            t = m.group(1).strip()
+            if t and t not in embedded_fig_types:
+                embedded_fig_types.append(t)
+
+    # Merge counts: prefer embedded markers when text captions are absent
+    figure_count = max(len(fig_captions) + len(md_images), total_marker_charts + total_marker_images)
+    paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+    visual_density = round(figure_count / max(len(paragraphs), 1), 2)
+
+    # Infer figure types from caption text
+    fig_types: list[str] = list(embedded_fig_types)  # start with embedded types
+    caption_blob = " ".join(fig_captions).lower()
+    if re.search(r"流程|process|workflow", caption_blob) and "流程图" not in fig_types:
+        fig_types.append("流程图")
+    if re.search(r"架构|结构|system|architecture", caption_blob) and "架构图" not in fig_types:
+        fig_types.append("架构图")
+    if re.search(r"趋势|折线|line|trend", caption_blob) and "折线趋势图" not in fig_types:
+        fig_types.append("折线趋势图")
+    if re.search(r"占比|饼图|pie|分布", caption_blob) and "饼图/分布图" not in fig_types:
+        fig_types.append("饼图/分布图")
+    if re.search(r"柱状|bar|对比|comparison", caption_blob) and "柱状对比图" not in fig_types:
+        fig_types.append("柱状对比图")
+    if re.search(r"示意|schematic|概念", caption_blob) and "概念示意图" not in fig_types:
+        fig_types.append("概念示意图")
+    if desc_patterns and not fig_types:
+        fig_types.append("说明性插图")
+
+    layout_hint = "图文穿插" if visual_density > 0.15 else ("段后插图" if figure_count > 0 else "纯文本，无插图")
+
+    return {
+        "figure_count": figure_count,
+        "markdown_images": len(md_images),
+        "description_hints": len(desc_patterns),
+        "embedded_chart_count": total_marker_charts,
+        "embedded_image_count": total_marker_images,
+        "visual_density": visual_density,
+        "figure_types": fig_types or (["通用插图"] if figure_count > 0 else []),
+        "caption_samples": [c.strip() for c in fig_captions[:4]],
+        "layout_hint": layout_hint,
+    }
+
+
+def _strip_template_specifics(value: str) -> str:
+    """Redact facts that should not become part of a reusable template."""
+    s = value or ""
+    s = re.sub(r"\b(19|20)\d{2}(?:[/-]\d{1,2})?(?:[/-]\d{1,2})?\b", "[时间范围]", s)
+    s = re.sub(r"[-+]?\d+(?:\.\d+)?\s*(?:%|％|亿元|万元|元|万|亿|人|家|次|项|页|字|GB|MB|kg|公里|平方公里)", "[数值指标]", s)
+    s = re.sub(r"\b\d{4,}\b", "[编号/数值]", s)
+    s = re.sub(r"《([^》]{2,40})》", "《[文档/项目名称]》", s)
+    s = re.sub(r"[\u4e00-\u9fffA-Za-z0-9_-]{2,30}(?:公司|集团|银行|分行|支行|部门|事业部|委员会|学院|大学|研究院)", "[组织主体]", s)
+    return s
+
+
+def _abstract_heading_label(heading: str, style: str) -> str:
+    clean = _strip_template_specifics(heading).strip()
+    if re.search(r"摘要|Abstract", clean, flags=re.I):
+        return "摘要/核心结论"
+    if re.search(r"关键词|Keywords", clean, flags=re.I):
+        return "关键词/索引词"
+    if re.search(r"背景|现状|概况|Introduction|引言", clean, flags=re.I):
+        return "背景与问题界定"
+    if re.search(r"方法|Method|模型|方案|路径", clean, flags=re.I):
+        return "方法/方案设计"
+    if re.search(r"实验|结果|Results|数据|分析|复盘", clean, flags=re.I):
+        return "证据分析与结果呈现"
+    if re.search(r"讨论|Discussion|风险|不足|挑战", clean, flags=re.I):
+        return "讨论/风险与限制"
+    if re.search(r"结论|总结|展望|计划|建议|Conclusion", clean, flags=re.I):
+        return "结论与行动建议"
+    if style == "official-document" and re.search(r"通知|意见|要求|事项|附件", clean):
+        return "公文事项与执行要求"
+    return clean[:60] or "未命名模块"
+
+
+def _infer_narrative_framework(text: str, style: str, headings: list[dict]) -> dict:
+    blob = text or ""
+    if style == "academic-paper":
+        framework = "IMRaD/学术论证：摘要 → 引言 → 相关研究/方法 → 实验结果 → 讨论/结论 → 参考文献"
+        arc = ["界定研究问题", "说明方法与数据", "呈现实验/分析证据", "讨论局限与贡献", "沉淀结论和参考文献"]
+    elif style in ("research-report", "performance-review"):
+        framework = "管理汇报/分析报告：背景与目标 → 关键事实 → 分析判断 → 风险机会 → 行动计划"
+        arc = ["先给管理语境", "用指标和案例支撑判断", "归纳问题和原因", "提出策略与行动", "落到责任/时间/预期结果"]
+    elif style == "official-document":
+        framework = "公文执行链路：发文依据 → 事项说明 → 执行要求 → 附件/落款"
+        arc = ["说明依据与目的", "明确适用对象", "列出执行要求", "给出时间节点和责任", "以落款/附件收束"]
+    elif style == "prd-document":
+        framework = "产品文档链路：目标用户/场景 → 需求范围 → 功能规则 → 验收与排期"
+        arc = ["定义场景和目标", "拆解范围与边界", "描述功能和交互", "列出验收标准", "沉淀排期和风险"]
+    else:
+        has_problem = bool(re.search(r"问题|挑战|不足|痛点|风险", blob))
+        has_action = bool(re.search(r"建议|计划|措施|路径|方案|行动", blob))
+        framework = "问题解决型" if has_problem and has_action else "主题展开型"
+        arc = ["交代背景/对象", "展开核心模块", "加入证据或案例", "归纳判断", "输出结论或下一步"]
+    skeleton = [
+        _abstract_heading_label(h["text"], style)
+        for h in headings[:10]
+    ]
+    return {"framework": framework, "arc": arc, "section_skeleton": list(dict.fromkeys(skeleton))}
+
+
+def _infer_audience_intent(text: str, style: str) -> dict:
+    blob = text or ""
+    if re.search(r"董事|高层|管理层|领导|经营|战略|决策|述职|绩效|KPI", blob):
+        audience = "高层管理者/决策层"
+        intent = "快速理解经营/项目状态、关键风险和下一步行动"
+        concerns = ["核心结论", "关键指标趋势", "风险与原因", "资源投入", "行动计划"]
+    elif re.search(r"客户|营销|销售|方案|价值主张|竞品|市场", blob):
+        audience = "客户/市场或销售对象"
+        intent = "传递价值、建立信任并推动选择或合作"
+        concerns = ["痛点匹配", "解决方案", "收益证明", "差异化优势", "落地路径"]
+    elif re.search(r"研发|技术|架构|API|部署|测试|算法|实验|模型", blob):
+        audience = "技术人员/研究评审"
+        intent = "说明方法、验证可靠性并支持复现或评审"
+        concerns = ["方法严谨性", "数据与实验", "实现细节", "对比结果", "限制条件"]
+    elif style == "official-document":
+        audience = "组织内部执行对象/主管单位"
+        intent = "正式传达要求、规范流程并形成可执行依据"
+        concerns = ["发文依据", "适用范围", "执行要求", "时间节点", "责任边界"]
+    else:
+        audience = "目标读者由用户任务决定"
+        intent = "围绕用户主题组织信息并形成可交付文档"
+        concerns = ["背景", "核心内容", "证据", "结论", "下一步"]
+    return {"target_reader": audience, "intent": intent, "core_concerns": concerns}
+
+
+def _extract_visual_force_patterns(text: str, image_patterns: dict) -> list[dict]:
+    figure_types = image_patterns.get("figure_types") or []
+    if not figure_types and image_patterns.get("figure_count", 0) <= 0:
+        return []
+    forces: list[dict] = []
+    for fig_type in figure_types[:6] or ["说明性图示"]:
+        if re.search(r"趋势|折线|line", fig_type, flags=re.I):
+            role = "用趋势变化支撑阶段性判断或预测"
+        elif re.search(r"柱状|对比|bar|comparison", fig_type, flags=re.I):
+            role = "用多对象对比突出差异、排序或优先级"
+        elif re.search(r"饼|分布|pie", fig_type, flags=re.I):
+            role = "用比例结构解释构成关系"
+        elif re.search(r"流程|process|workflow", fig_type, flags=re.I):
+            role = "用流程链路降低复杂任务理解成本"
+        elif re.search(r"架构|结构|architecture", fig_type, flags=re.I):
+            role = "用系统结构展示模块关系和责任边界"
+        else:
+            role = "作为说明性视觉证据补充正文论点"
+        forces.append({
+            "type": fig_type,
+            "placement": image_patterns.get("layout_hint") or "按章节语义插入",
+            "function": role,
+            "data_policy": "只复用图表角色、位置和证明关系，不复用图内具体数字或实体名称",
+        })
+    return forces
+
+
+def _infer_writing_register(text: str, style: str) -> dict:
+    """Infer writing register: formality, tone, perspective, sentence density."""
+    blob = text or ""
+
+    # Perspective
+    if re.search(r"您|贵司|贵方|贵公司|贵单位", blob):
+        perspective = "第二人称（面向客户/受众）"
+    elif re.search(r"我们|本公司|本报告|本文|笔者|本行|本部门|本单位", blob):
+        perspective = "第一人称（机构/作者视角）"
+    else:
+        perspective = "第三人称（客观陈述视角）"
+
+    # Formality
+    if style in ("official-document", "contract-document"):
+        formality = "高度正式（公文/法务语体）"
+        tone = "严肃规范、中立权威"
+    elif re.search(r"综上所述|根据|依据|特此|鉴于|经研究|特别是|尤其需指出", blob):
+        formal_count = len(re.findall(r"综上所述|根据|依据|特此|鉴于|经研究|特别是|尤其需指出", blob))
+        informal_count = len(re.findall(r"其实|说白了|大概|差不多|挺|非常好|很不错", blob))
+        if formal_count > informal_count:
+            formality = "正式（商务/学术语体）"
+            tone = "专业严谨、客观理性"
+        else:
+            formality = "半正式（分析报告语体）"
+            tone = "清晰直接、以数据为导向"
+    elif style == "prd-document":
+        formality = "半正式（产品规范语体）"
+        tone = "精准简洁、以用例为导向"
+    else:
+        formality = "半正式（报告/分析语体）"
+        tone = "清晰直接、以数据为导向"
+
+    # Sentence density
+    sentences = [s for s in re.split(r"[。！？.!?]", blob) if s.strip()]
+    avg_len = sum(len(s) for s in sentences) / max(len(sentences), 1)
+    if avg_len > 45:
+        density = "长句密集，信息量大，适合深度论证"
+    elif avg_len > 22:
+        density = "中等句长，兼顾表达与可读性"
+    else:
+        density = "短句精炼，要点突出，便于快速阅读"
+
+    return {
+        "formality": formality,
+        "tone": tone,
+        "perspective": perspective,
+        "sentence_density": density,
+        "register_summary": f"{formality} · {perspective}",
+    }
+
+
+def _infer_argumentation_pattern(text: str, style: str, headings: list[dict]) -> dict:
+    """Infer the high-level argumentation pattern and logic thread."""
+    blob = text or ""
+    heading_blob = " ".join(h["text"] for h in headings)
+
+    if style == "academic-paper":
+        pattern = "演绎论证型"
+        description = "从研究问题出发，通过实验/数据推导结论，形成可复现的知识贡献"
+        logic_thread = [
+            "提出研究问题与假设",
+            "描述研究方法与数据来源",
+            "呈现实验结果与分析",
+            "讨论发现的意义与局限",
+            "沉淀可泛化的结论",
+        ]
+    elif re.search(r"背景|现状|挑战|问题|痛点", heading_blob) and re.search(r"建议|对策|方案|路径|举措", heading_blob):
+        pattern = "问题-解决型"
+        description = "先识别并量化现状问题，再系统地提出解决路径，强调因果逻辑"
+        logic_thread = [
+            "描述当前状态与目标差距",
+            "分析问题根因与深层影响",
+            "设计解决方案与选型标准",
+            "制定行动计划与预期收益",
+        ]
+    elif re.search(r"市场|竞争|趋势|格局|行业", blob) and re.search(r"机会|优势|劣势|威胁|SWOT", blob, flags=re.I):
+        pattern = "情境-机会型"
+        description = "扫描外部环境与内部能力，识别战略机会窗口，提出差异化建议"
+        logic_thread = [
+            "扫描外部市场与竞争格局",
+            "评估内部优势与短板",
+            "识别战略机会与潜在威胁",
+            "提出差异化竞争路径与优先级",
+        ]
+    elif re.search(r"目标|KPI|完成|进展|成果|绩效|述职", blob):
+        pattern = "目标-结果型"
+        description = "以既定目标为锚点，追踪执行进展与关键成果，总结规律与改进方向"
+        logic_thread = [
+            "回顾阶段目标与预期指标",
+            "展示核心成果与完成率",
+            "分析亮点、短板与偏差原因",
+            "规划下阶段重点与改进方向",
+        ]
+    elif style == "prd-document":
+        pattern = "需求-约束型"
+        description = "从用户场景出发定义功能边界，用规则约束实现，通过验收标准确保交付质量"
+        logic_thread = [
+            "界定用户场景与核心痛点",
+            "划定功能范围与边界条件",
+            "描述功能规则与交互逻辑",
+            "定义验收标准与排期计划",
+        ]
+    elif style == "official-document":
+        pattern = "指令-执行型"
+        description = "以权威依据为起点，明确执行要求，形成可追溯的行政执行链路"
+        logic_thread = [
+            "引述法规/政策/上级指示",
+            "说明适用对象与范围",
+            "列出具体执行要求与规范",
+            "明确责任主体、时间节点与反馈机制",
+        ]
+    elif re.search(r"对比|比较|vs|相比|差异|优于|劣于|方案[AB一二]", blob):
+        pattern = "比较-判断型"
+        description = "通过多维度对比建立评价坐标，形成有据可查的判断结论与推荐"
+        logic_thread = [
+            "确定比较对象与评价维度",
+            "逐维度呈现对比数据",
+            "综合判断差异与优劣权衡",
+            "给出选型建议与实施路径",
+        ]
+    else:
+        pattern = "主题展开型"
+        description = "围绕核心主题分层展开，每个模块贡献独立视角，汇聚为完整认知图谱"
+        logic_thread = [
+            "引入主题背景与边界定义",
+            "分模块深度展开核心内容",
+            "结合证据与案例强化论点",
+            "归纳核心判断与结论",
+        ]
+
+    return {
+        "pattern": pattern,
+        "description": description,
+        "logic_thread": logic_thread,
+    }
+
+
+def _build_macro_template_profile(text: str) -> dict:
+    style = infer_document_style(text)
+    headings = _extract_outline_hierarchy(text)
+    image_patterns = _extract_image_patterns(text)
+    narrative = _infer_narrative_framework(text, style, headings)
+    audience = _infer_audience_intent(text, style)
+    visual_force = _extract_visual_force_patterns(text, image_patterns)
+    writing_register = _infer_writing_register(text, style)
+    argumentation = _infer_argumentation_pattern(text, style, headings)
+    return {
+        "macro_structure": {
+            "style": style,
+            "section_skeleton": narrative["section_skeleton"],
+            "structure_policy": "复用章节职责、顺序、层级和篇幅关系；剥离具体主体、年份、指标和结论",
+        },
+        "narrative_framework": {
+            "name": narrative["framework"],
+            "arc": narrative["arc"],
+        },
+        "visual_force": visual_force,
+        "audience_intent": audience,
+        "writing_register": writing_register,
+        "argumentation_pattern": argumentation,
+        "business_data_policy": {
+            "reuse": ["标题层级", "章节职责", "叙事顺序", "表格类型", "图片/图表功能", "语气与段落密度"],
+            "forbid": ["具体营收/KPI/百分比", "具体机构/客户/人员", "具体年份结论", "原文业务判断", "图表内具体数字"],
+            "placeholder_examples": ["[主体]", "[时间范围]", "[指标]", "[证据图]", "[行动计划]"],
+        },
+    }
+
+
+def _extract_section_budgets(text: str) -> list[dict]:
+    """Estimate word-count budget per major section to guide length mirroring."""
+    headings = _extract_outline_hierarchy(text)
+    if not headings:
+        return []
+    lines = text.splitlines()
+    # Build section boundaries from line positions of h1-level headings
+    level1 = [h for h in headings if h["level"] == 1]
+    if not level1:
+        level1 = headings[:6]
+
+    # Find line positions for each top-level heading
+    positions: list[tuple[str, int]] = []
+    for h in level1:
+        pattern = re.compile(re.escape(h["text"][:30]))
+        for idx, line in enumerate(lines):
+            if pattern.search(line):
+                positions.append((h["text"], idx))
+                break
+
+    if not positions:
+        return []
+
+    budgets: list[dict] = []
+    for i, (title, start) in enumerate(positions):
+        end = positions[i + 1][1] if i + 1 < len(positions) else len(lines)
+        section_text = " ".join(lines[start:end])
+        word_count = len(re.findall(r"[一-鿿]|[a-zA-Z]+", section_text))
+        budgets.append({"section": title[:50], "estimated_chars": word_count})
+
+    total = sum(b["estimated_chars"] for b in budgets) or 1
+    for b in budgets:
+        b["weight_pct"] = round(b["estimated_chars"] / total * 100, 1)
+    return budgets
+
+
+def _extract_writing_style(text: str) -> dict:
+    """Infer writing voice, tone, and structural opening patterns."""
+    blob = text or ""
+    # Voice: first-person vs third-person
+    first_person = len(re.findall(r"我们|本公司|本项目|笔者|作者|我司", blob))
+    third_person = len(re.findall(r"该[公司项目团队]|其|彼|上述", blob))
+    voice = "第一人称（我们/本公司）" if first_person > third_person else "第三人称/客观陈述"
+
+    # Tone signals
+    formal_score = len(re.findall(r"根据|依据|综上|总结|建议|应当|须|必须|不得", blob))
+    casual_score = len(re.findall(r"其实|大概|可能|感觉|挺|很|非常|特别", blob))
+    tone = "正式严谨" if formal_score > casual_score else ("轻松叙述" if casual_score > 2 else "中性客观")
+
+    # Opening pattern per section
+    bullets = len(re.findall(r"^[-•·]\s", blob, flags=re.MULTILINE))
+    numbered = len(re.findall(r"^\d+[.)]\s", blob, flags=re.MULTILINE))
+    opening_style = "条目式（bullet/编号优先）" if (bullets + numbered) > 10 else "段落式（结论先行）"
+
+    # Emphasis patterns
+    bold_count = len(re.findall(r"\*\*[^*]+\*\*|__[^_]+__", blob))
+    quote_count = len(re.findall(r'「[^」]+」|“[^”]+”|《[^》]+》', blob))
+    emphasis = []
+    if bold_count > 3:
+        emphasis.append("粗体关键词")
+    if quote_count > 3:
+        emphasis.append("引号/书名号强调")
+    if not emphasis:
+        emphasis.append("纯文字，少用强调符号")
+
+    return {
+        "voice": voice,
+        "tone": tone,
+        "opening_style": opening_style,
+        "emphasis_patterns": emphasis,
+        "formal_signal_count": formal_score,
+    }
+
+
+def _extract_citation_patterns(text: str) -> dict:
+    """Extract citation and reference patterns."""
+    bracket_refs = len(re.findall(r"\[[0-9]{1,3}\]", text))
+    year_refs = len(re.findall(r"\([12]\d{3}[a-z]?\)", text))
+    footnote_like = len(re.findall(r"[①②③④⑤⑥⑦⑧⑨⑩†‡*]", text))
+    bib_sections = bool(re.search(r"参考文献|References|Bibliography", text, flags=re.I))
+    return {
+        "bracket_refs": bracket_refs,
+        "year_refs": year_refs,
+        "footnote_like": footnote_like,
+        "has_bibliography": bib_sections,
+        "policy": "保留引用、脚注和参考文献规范" if (bracket_refs or year_refs or footnote_like or bib_sections) else "仅在内容需要时标注来源",
+    }
+
+
+def _extract_terminology(text: str) -> list[str]:
+    """Extract potential domain terminology — capitalized phrases, quoted terms."""
+    terms = re.findall(r'「([^」]{2,20})」|"([^"]{2,20})"|《([^》]{2,30})》', text)
+    flat = [t for group in terms for t in group if t]
+    long_phrases = re.findall(r"[一-鿿]{4,8}(?:技术|系统|平台|模型|算法|引擎|架构|方案|策略|指标|标准|规范|流程|机制)", text)
+    flat.extend(long_phrases)
+    return list(dict.fromkeys(flat))[:15]
+
+
+def build_skill_from_document(filename: str, text: str) -> tuple[str, str]:
+    import time as _time
+    style = infer_document_style(text)
+    base = Path(filename).stem or style
+    raw_slug = _slugify(base)
+    # If slug collapsed to a generic placeholder due to all-CJK filename, use style + timestamp
+    if not raw_slug or raw_slug in ("custom", "custom-document-skill"):
+        raw_slug = f"{style}-{int(_time.time()) % 100000}"
+    slug = f"user-{raw_slug}"
+    shape = analyze_document_shape(text)
+    outline = shape["outline_samples"] or ["1. 背景与目标", "2. 结构与证据", "3. 正文生成", "4. 质量校验"]
+    outline_md = "\n".join(f"- {item[:120]}" for item in outline)
+
+    hierarchy = _extract_outline_hierarchy(text)
+    hierarchy_md = "\n".join(
+        f"{'  ' * (h['level'] - 1)}- {'#' * h['level']} {h['text'][:100]}" for h in hierarchy[:18]
+    ) or outline_md
+
+    density = _extract_paragraph_density(text)
+    table_patterns = _extract_table_patterns(text)
+    image_patterns = _extract_image_patterns(text)
+    section_budgets = _extract_section_budgets(text)
+    writing_style = _extract_writing_style(text)
+    citation_patterns = _extract_citation_patterns(text)
+    terminology = _extract_terminology(text)
+    macro = _build_macro_template_profile(text)
+    macro_structure = macro["macro_structure"]
+    narrative = macro["narrative_framework"]
+    audience = macro["audience_intent"]
+    macro_skeleton_md = "\n".join(f"- {item}" for item in macro_structure["section_skeleton"][:10]) or "- 按用户任务动态抽象章节职责"
+    narrative_arc_md = "\n".join(f"- {item}" for item in narrative["arc"])
+    visual_force_md = "\n".join(
+        f"- **{item['type']}**：{item['placement']}；{item['function']}。{item['data_policy']}"
+        for item in macro["visual_force"][:6]
+    ) or "- 未检测到固定图示；生成时按证据表达需要补充图表/图片。"
+    term_md = "\n".join(f"- {_strip_template_specifics(t)}" for t in terminology) or "- （根据任务动态提取）"
+
+    has_tables = table_patterns["has_markdown_tables"] or table_patterns["has_tabular_data"]
+    table_policy = (
+        f"复刻表格结构：检测到 {table_patterns['table_count']} 个表格，"
+        f"均值 {table_patterns['avg_column_count']} 列，"
+        f"类型：{', '.join(table_patterns['table_types_detected'])}。"
+        f"标题位于{table_patterns['caption_position']}。"
+    ) if has_tables else "仅在内容需要时生成表格"
+
+    has_images = image_patterns["figure_count"] > 0
+    image_policy = (
+        f"复刻插图布局：检测到约 {image_patterns['figure_count']} 处图示，"
+        f"视觉密度 {image_patterns['visual_density']}（图/段落），"
+        f"布局模式：{image_patterns['layout_hint']}，"
+        f"图类型：{', '.join(image_patterns['figure_types'])}。"
+        f"生成时用 [CHART: type | title | ...] 或 [IMAGE: description] 占位符标注同等密度的图示位置。"
+    ) if has_images else "参考文档无插图，按需插入说明性图示即可"
+
+    citation_policy = citation_patterns["policy"]
+
+    density_desc = {
+        "dense-academic": "高密度学术段落：每段 300+ 字，8+ 句，适合深度论证",
+        "standard-formal": "标准正式段落：每段 150-300 字，适合商务报告",
+        "concise-business": "简洁商务段落：每段 80-150 字，适合方案/计划",
+        "brief-bullet": "简要条目式：适合清单、纪要、操作指南",
+        "unknown": "根据任务动态调整段落密度",
+    }.get(density["style"], "根据任务动态调整")
+
+    # Section budget block
+    budget_md = ""
+    if section_budgets:
+        budget_rows = "\n".join(
+            f"| {b['section'][:40]} | ~{b['estimated_chars']} 字 | {b['weight_pct']}% |"
+            for b in section_budgets
+        )
+        budget_md = f"""
+## 章节篇幅配比（Section Budgets）
+
+按参考文档的实际篇幅分布生成，保持各章节权重不大幅偏离：
+
+| 章节 | 估算字数 | 占比 |
+|---|---|---|
+{budget_rows}
+
+> **规则**：生成时各章节实际字数可在估算值 ±30% 内浮动；若用户指定篇幅则以用户要求为准。
+"""
+
+    # Column header hint block
+    col_hint_md = ""
+    if table_patterns["column_header_samples"]:
+        cols_str = " | ".join(table_patterns["column_header_samples"])
+        col_hint_md = f"\n- **典型列头样本**：`{cols_str}`"
+
+    content = f"""---
+name: {slug}
+description: >
+  用户从参考文档「{filename}」自动生成的宏观模板。抽象复用该文档的结构层级、
+  叙事框架、段落密度、表格类型、图示作用力、写作语气和引用规范，用于生成同类文档。
+---
+
+# {base} · 定制文档模板
+
+本模板从参考文档「{filename}」提取可复用的宏观结构、叙事逻辑、视觉布局和写作约束。
+**禁止**将参考文档的具体数字、人名、机构名、年份结论或机密内容带入新文档——仅复用骨架、风格和表达功能。
+
+## 文档档案（Detected Profile）
+
+| 字段 | 检测结果 |
+|---|---|
+| 来源文件 | {filename} |
+| 文档类型 | {style} |
+| 结构标题数 | {shape["heading_count"]} |
+| 表格行数 | {shape["table_like_rows"]} |
+| 引用标记数 | {shape["citation_markers"]} |
+| 段落风格 | {density["style"]}（均值 {density["avg_chars"]} 字 / {density["avg_sentences"]} 句） |
+| 写作语气 | {writing_style["tone"]} · {writing_style["voice"]} |
+| 图示数量 | {image_patterns["figure_count"]} 处（嵌入图表 {image_patterns["embedded_chart_count"]}，嵌入图片 {image_patterns["embedded_image_count"]}） |
+
+## 宏观内容结构（Macro Structure）
+
+- **抽象类型**：{macro_structure["style"]}
+- **结构策略**：{macro_structure["structure_policy"]}
+- **章节职责骨架**：
+
+{macro_skeleton_md}
+
+## 叙事框架（Narrative Arc）
+
+- **框架**：{narrative["name"]}
+- **起承转合**：
+
+{narrative_arc_md}
+
+## 受众与意图推断（Audience & Intent）
+
+- **目标读者**：{audience["target_reader"]}
+- **使用意图**：{audience["intent"]}
+- **核心关注**：{"、".join(audience["core_concerns"])}
+
+## 结构蓝图（Structure Blueprint）
+
+参考文档的标题层级职责，生成时复用同等深度和顺序；具体主体、年份、数字和原文结论必须抽象替换：
+
+{hierarchy_md}
+{budget_md}
+## 段落与密度规范（Paragraph & Density）
+
+- **风格**：{density_desc}
+- **均值段落长度**：~{density["avg_chars"]} 字
+- **均值句子数**：~{density["avg_sentences"]} 句/段
+- **开头模式**：{writing_style["opening_style"]}
+- **强调方式**：{", ".join(writing_style["emphasis_patterns"])}
+- **规则**：严格匹配段落密度，除非用户明确要求更改。
+
+## 表格样式规范（Table Style）
+
+- **是否含表格**：{"是" if has_tables else "否"}
+- **检测到表格数**：{table_patterns["table_count"]}{col_hint_md}
+- **表格类型**：{", ".join(table_patterns["table_types_detected"]) if table_patterns["table_types_detected"] else "无"}
+- **标题位置**：{table_patterns["caption_position"]}
+- **标题样本**：{chr(10).join("  - " + c for c in table_patterns["caption_samples"]) or "  - 无"}
+- **策略**：{table_policy}
+- **溢出处理**：超出页宽的表格交由 `table-figure-authoring` 处理，或移至附录。
+
+## 图示与视觉布局规范（Figure & Visual Layout）
+
+- **图示数量**：{image_patterns["figure_count"]} 处
+- **视觉密度**：{image_patterns["visual_density"]}（图示数/段落数）
+- **布局模式**：{image_patterns["layout_hint"]}
+- **图示类型**：{", ".join(image_patterns["figure_types"]) or "无"}
+- **图注样本**：{chr(10).join("  - " + c for c in image_patterns["caption_samples"]) or "  - 无"}
+- **策略**：{image_policy}
+
+## 图片作用力分析（Visual Force）
+
+{visual_force_md}
+
+## 事实隔离规则（Business Data Firewall）
+
+- **可复用**：{", ".join(macro["business_data_policy"]["reuse"])}
+- **禁止复用**：{", ".join(macro["business_data_policy"]["forbid"])}
+- **占位方式**：{", ".join(macro["business_data_policy"]["placeholder_examples"])}
+- **生成原则**：新文档事实必须来自用户本次输入或上传数据；参考模板只提供结构、视觉角色、语气与格式规范。
+
+## 引用与来源规范（Citation Policy）
+
+- **方括号引用**：{citation_patterns["bracket_refs"]} 处
+- **年份引用**：{citation_patterns["year_refs"]} 处
+- **脚注标记**：{citation_patterns["footnote_like"]} 处
+- **参考文献节**：{"有" if citation_patterns["has_bibliography"] else "无"}
+- **策略**：{citation_policy}
+
+## 写作风格规范（Writing Style）
+
+- **视角**：{writing_style["voice"]}
+- **语气**：{writing_style["tone"]}（正式信号 {writing_style["formal_signal_count"]} 处）
+- **段落开头**：{writing_style["opening_style"]}
+- **强调方式**：{", ".join(writing_style["emphasis_patterns"])}
+- **术语一致性**：下方领域术语表必须全文统一使用。
+
+## 领域术语表（Domain Terminology）
+
+全文保持一致，禁止同义词混用：
+
+{term_md}
+
+## 工作流程（Workflow）
+
+1. **锁定意图** — 保留用户原始问题、已选模板、上传文件和预期交付物，不得替换为参考文档内容。
+2. **分离来源** — 先读用户上传文件（事实证据）；参考文档仅提供结构/风格约束，不得作为事实来源。
+3. **规划章节** — 按结构蓝图生成 DocumentPlan：各章论点、证据需求、表格/图示需求、字数预算。
+4. **路由子技能** — 证据读取→`data-grounding`；长文写作→`word-authoring`；
+   数据分析→`excel-modeling`（如需）；最终核验→`qa-verification`。
+5. **按章起草** — 每章按其论点、证据、预期密度和段落风格独立生成，不跨章混用内容。
+6. **精确复刻格式** — 严格匹配：标题层级 · 段落密度 · 表格列数与类型 · 图示密度与类型 · 引用格式 · 强调方式。
+7. **审核与修复** — 检查：无来源断言 / 章节缺失 / 表格溢出 / 引用不一致 / 隐私风险 / 预览与下载一致性。
+
+## 目标 / 参考边界（Target / Reference Boundary）
+
+用户说「参考 X 生成 Y」时，Y 是目标文档，X 仅提供结构和风格。
+
+- 最终标题来自 Y（目标任务），不得来自 X（参考文档）或原始 prompt 句子。
+- X 的历史数据可作为基线、对比或改进依据，不能直接当作 Y 的现状成就。
+- 示例：「参考2025年述职报告生成2026年述职报告」→ 标题应为「2026年述职报告」。
+
+## 技能交接（Skill Handoff）
+
+| 阶段 | 负责人 | 技能 | 预期输出 |
+|---|---|---|---|
+| 任务接收 | Elin | `intake-planner` | 动态任务队列 |
+| 证据读取 | Vera / Remy | `data-grounding` | 证据包与结构注释 |
+| 定制风格 | Vera | `{slug}` | 文档专属规则 |
+| 正文写作 | Li Bai | `word-authoring` | 各章草稿与实时预览 |
+| 质量核验 | Sage | `qa-verification` | 修复清单与最终通过 |
+
+## 执行契约（Execution Contract）
+
+```json
+{{
+  "skill": "{slug}",
+  "status": "pass|needs_repair|blocked",
+  "outputs": [
+    "structure_blueprint",
+    "section_budgets",
+    "paragraph_density_rules",
+    "table_style_rules",
+    "figure_layout_rules",
+    "writing_style_rules",
+    "citation_rules",
+    "terminology_rules",
+    "qa_checklist"
+  ],
+  "evidence_refs": [],
+  "assumptions": [],
+  "risks": [],
+  "handoff_to": ["word-authoring", "qa-verification"],
+  "quality_gate": "pass|fail"
+}}
+```
+
+## 质量检查清单（Quality Checklist）
+
+- [ ] 用户问题被直接回答，未被参考文档内容替换。
+- [ ] 用户上传的当前任务文件优先级高于参考文档示例。
+- [ ] 章节顺序与结构蓝图一致，偏差有说明。
+- [ ] 段落密度匹配检测到的风格（{density["style"]}）。
+- [ ] 表格列数、类型、标题位置与参考文档一致。
+- [ ] 图示密度与布局模式（{image_patterns["layout_hint"]}）一致，已用占位符标注。
+- [ ] 引用格式与参考文档保持一致。
+- [ ] 领域术语全文统一，未混用同义词。
+- [ ] 内容通过 `qa-verification` 最终校验。
+"""
+    return slug, content

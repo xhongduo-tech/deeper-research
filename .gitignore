@@ -1,0 +1,53 @@
+# Environment
+.env
+
+# Data
+data/
+
+# Logs
+logs/
+*.log
+
+# Docker
+docker-compose.override.yml
+
+# Build artifacts
+offline-images/images.tar.gz
+offline-images/deploy_offline.sh
+offline-images/README_DEPLOY.txt
+
+# Dev databases
+backend/app.db
+backend/sandbox_workspace/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+
+# Claude
+.claude/
+
+# Redis
+dump.rdb
+
+# Data collection artifacts
+scripts/data_collection/data/
+data-collector/
+embedding/

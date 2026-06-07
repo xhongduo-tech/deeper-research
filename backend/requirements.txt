@@ -1,0 +1,125 @@
+# ── Web framework ──────────────────────────────────────────────────────────
+fastapi>=0.109.0,<1
+uvicorn[standard]>=0.27.0,<1
+python-multipart>=0.0.6,<1
+pydantic-settings>=2.1.0,<3
+
+# ── Database ───────────────────────────────────────────────────────────────
+sqlalchemy[asyncio]>=2.0.36,<3
+greenlet>=3.0.0
+aiosqlite>=0.19.0,<1
+asyncpg>=0.29.0,<1
+alembic>=1.13.1,<2
+
+# ── Vector Store ───────────────────────────────────────────────────────────
+qdrant-client>=1.9.0,<2
+
+# ── Auth ───────────────────────────────────────────────────────────────────
+python-jose[cryptography]>=3.3.0,<4
+passlib[bcrypt]>=1.7.4,<2
+bcrypt>=4.0.1,<5
+
+# ── LLM / API clients ──────────────────────────────────────────────────────
+openai>=1.9.0,<2
+httpx>=0.26.0,<1
+
+# ── Document parsing ───────────────────────────────────────────────────────
+PyPDF2>=3.0.1,<4
+pdfplumber>=0.11.0,<1
+python-docx>=1.1.0,<2
+openpyxl>=3.1.2,<4
+xlrd>=2.0.1,<3
+xlsxwriter>=3.2.0,<4
+python-pptx>=0.6.23,<2
+lxml>=5.2.0,<6
+chardet>=5.2.0,<6
+python-magic>=0.4.27,<1
+
+# ── Data science ───────────────────────────────────────────────────────────
+# Minimum versions with Python 3.13 wheels; all compatible with Python 3.11 too
+pandas>=2.2.3,<3
+numpy>=2.1.0,<3
+scipy>=1.14.0,<2
+scikit-learn>=1.5.0,<2
+statsmodels>=0.14.3,<1
+duckdb>=1.1,<2
+polars>=1.17,<2
+pyarrow>=18,<23
+
+# ── Scientific / precision computing (offline) ─────────────────────────────
+# Arbitrary-precision arithmetic (complement to Python's built-in decimal)
+mpmath>=1.3.0
+# Symbolic mathematics / computer algebra system
+sympy>=1.12
+# Fast array expression evaluator (NumPy accelerator, 2-5× speedup on large arrays)
+numexpr>=2.9.0
+# Numba JIT compiler for numeric Python (optional; may be large)
+# numba>=0.59  # uncomment if GPU/JIT acceleration is needed
+# Bottleneck — fast pandas/numpy aggregation functions
+bottleneck>=1.3.7
+# Tabulate — pretty-print tables in analysis output
+tabulate>=0.9.0
+
+# ── Extended Excel / spreadsheet format support ────────────────────────────
+# Excel Binary Workbook (.xlsb) — common in large enterprises
+pyxlsb>=1.0.10
+# OpenDocument Spreadsheet (.ods) — LibreOffice / Google Sheets export
+odfpy>=1.4.1
+# fastparquet — additional Parquet engine (complement to pyarrow)
+fastparquet>=2024.2.0
+
+# ── Visualization ──────────────────────────────────────────────────────────
+matplotlib>=3.9.0,<4
+seaborn>=0.13.2,<1
+Pillow>=10.4.0,<12
+plotly>=5.24.1,<7
+kaleido>=1.0.0
+altair>=5.4,<6
+vl-convert-python>=1.7,<2
+PyMuPDF>=1.27.2,<2
+tabulate==0.9.0
+jinja2>=3.1.4,<4
+
+# ── Extended chart libraries (offline / air-gapped) ────────────────────────
+# Treemap rendering with matplotlib (fills rect area proportionally)
+squarify>=0.4.3
+# Word cloud / tag cloud from text
+wordcloud>=1.9.3
+# Network / flow / relationship diagrams
+networkx>=3.3
+# Financial candlestick / OHLC / volume charts
+mplfinance>=0.12.10b0
+# Waffle charts (unit grids, icon arrays)
+pywaffle>=1.1.0
+# Calendar heatmaps (GitHub-activity style)
+calplot>=0.1.7
+# Ridgeline / joyplot (overlapping distribution rows)
+joypy>=0.2.2
+# Grammar-of-graphics style (ggplot2-compatible)
+plotnine>=0.13.6
+# Venn diagrams (2-set and 3-set)
+matplotlib-venn>=0.11.10
+# Automatic label de-overlap for scatter / bar annotations
+adjustText>=1.1.1
+
+# ── Security / Sandbox ─────────────────────────────────────────────────────
+RestrictedPython>=7.4
+
+# ── Async / IO ─────────────────────────────────────────────────────────────
+aiofiles>=23.2.1,<25
+websockets>=12.0,<15
+
+# ── Testing ────────────────────────────────────────────────────────────────
+pytest>=7.4.4,<9
+pytest-asyncio>=0.23.3,<1
+
+# ── PDF generation ────────────────────────────────────────────────────────
+reportlab>=4.0.0
+
+# ── Utilities ──────────────────────────────────────────────────────────────
+redis>=5.0.1,<7
+
+# ── RAG / Knowledge Base ───────────────────────────────────────────────────
+# numpy already included above via data science section
+# scikit-learn already included above for TF-IDF fallback
+# httpx already included above for Ollama embed API calls
