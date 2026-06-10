@@ -134,6 +134,7 @@ SKILL_PURPOSES = {
     "training-manual-authoring": ("Li Bai / Sage", "生成培训手册、SOP、练习题、案例和操作检查表"),
     "feasibility-study-authoring": ("Quinn / Li Bai", "生成可行性研究的技术、经济、组织、法律、风险和结论建议"),
     "performance-review-authoring": ("Li Bai / Sage", "生成述职报告的 KPI、项目复盘、问题反思和下一阶段计划"),
+    "project-retrospective-authoring": ("Quinn / Sage", "生成项目复盘的目标-过程-结果-偏差-根因-沉淀-行动闭环"),
     "policy-document-authoring": ("Elin / Adler", "生成政策解读、制度方案、实施意见、职责流程和合规检查"),
     "financial-research-authoring": ("Quinn / Li Bai / Sage", "生成卖方研报级别的业绩点评、投资简报、深度报告：盈利预测三年表、可比公司估值、情景分析概率加权目标价、催化剂日历、风险量化"),
 }
@@ -280,6 +281,8 @@ REPORT_TYPE_AUTHORING_SKILLS: dict[str, str] = {
     "会议纪要": "meeting-minutes-authoring",
     "述职报告": "performance-review-authoring",
     "绩效评估": "performance-review-authoring",
+    "项目复盘": "project-retrospective-authoring",
+    "复盘报告": "project-retrospective-authoring",
     # Technical documents
     "技术文档": "technical-document-authoring",
     "技术方案": "technical-document-authoring",
@@ -386,7 +389,15 @@ AUTHORING_SKILL_ALIASES: dict[str, tuple[str, ...]] = {
         "绩效评估",
         "年度总结",
         "工作总结",
+    ),
+    "project-retrospective-authoring": (
+        "项目复盘",
         "复盘报告",
+        "复盘材料",
+        "复盘总结",
+        "postmortem",
+        "post-mortem",
+        "retrospective",
     ),
     "technical-document-authoring": (
         "技术文档",

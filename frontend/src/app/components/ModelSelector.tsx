@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { ChevronDown, ChevronRight, Check } from "lucide-react";
+import { ChevronDown, Check } from "lucide-react";
 
 // Fallback models when backend is unavailable
 const FALLBACK_MODELS = [
@@ -117,19 +117,6 @@ export function ModelSelector({
     animation: `ms-appear 0.15s cubic-bezier(0.34,1.4,0.64,1)`,
   };
 
-  const effortPanelStyle: React.CSSProperties = {
-    position: "absolute",
-    ...(align === "right" ? { right: "calc(100% + 8px)" } : { left: "calc(100% + 8px)" }),
-    ...(isTop ? { bottom: 0 } : { top: 0 }),
-    width: 220,
-    background: "var(--bg-elevated, #fff)",
-    border: "1px solid rgba(0,0,0,.1)",
-    boxShadow: "0 8px 28px rgba(0,0,0,.12)",
-    borderRadius: 14,
-    overflow: "hidden",
-    animation: `ms-appear 0.13s cubic-bezier(0.34,1.4,0.64,1)`,
-  };
-
   // Display name for the trigger button
   const displayName = current
     ? (current.name.length > 14 ? current.name.slice(0, 12) + "…" : current.name)
@@ -158,64 +145,72 @@ export function ModelSelector({
       {/* ── Main dropdown ── */}
       {open && (
         <div style={dropdownStyle}>
-          {/* Model list */}
-          <div style={{ padding: "6px 6px 4px" }}>
-            {models.map((m) => {
-              const active = selectedModel === m.id;
-              return (
+          <div style={{ display: "flex" }}>
+            {/* Left column: model list + effort trigger */}
+            <div style={{ minWidth: 200, padding: "6px 6px 4px" }}>
+              {(() => {
+                const selectedExists = models.some((m) => m.id === selectedModel);
+                return models.map((m, i) => {
+                  const active = selectedExists ? selectedModel === m.id : i === 0;
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => { onSelect(m.id); setOpen(false); setEffortOpen(false); }}
+                      style={{
+                        width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+                        padding: "8px 10px", borderRadius: 9, border: "none", cursor: "pointer", textAlign: "left",
+                        background: active ? "rgba(37,99,235,0.08)" : "transparent",
+                        transition: "background .12s",
+                      }}
+                      onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "var(--hover, rgba(0,0,0,.04))"; }}
+                      onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
+                    >
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ fontSize: 13.5, fontWeight: 600, color: active ? "#2563eb" : "var(--ink-800)" }}>{m.name}</span>
+                          {active && i === 0 && !selectedExists && (
+                            <span style={{ fontSize: 10, fontWeight: 600, padding: "1px 6px", borderRadius: 99, background: "rgba(0,0,0,.06)", color: "var(--ink-400)" }}>默认</span>
+                          )}
+                        </div>
+                        {m.description && (
+                          <p style={{ fontSize: 11.5, color: "var(--ink-400)", margin: "1px 0 0" }}>{m.description}</p>
+                        )}
+                      </div>
+                      {active && <Check size={13} style={{ color: "#2563eb", flexShrink: 0 }} />}
+                    </button>
+                  );
+                });
+              })()}
+
+              {/* Effort trigger row */}
+              <div style={{ borderTop: "1px solid rgba(0,0,0,.07)", padding: "4px 0", marginTop: 4 }}>
                 <button
-                  key={m.id}
-                  onClick={() => { onSelect(m.id); setOpen(false); setEffortOpen(false); }}
+                  onClick={() => setEffortOpen((v) => !v)}
                   style={{
                     width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
-                    padding: "8px 10px", borderRadius: 9, border: "none", cursor: "pointer", textAlign: "left",
-                    background: active ? "rgba(0,0,0,.06)" : "transparent",
+                    padding: "8px 10px", borderRadius: 9, border: "none", cursor: "pointer",
+                    background: effortOpen ? "var(--hover, rgba(0,0,0,.04))" : "transparent",
                     transition: "background .12s",
                   }}
-                  onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "var(--hover, rgba(0,0,0,.04))"; }}
-                  onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
                 >
-                  <div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ fontSize: 13.5, fontWeight: 500, color: "var(--ink-900)" }}>{m.name}</span>
-                    </div>
-                    {m.description && (
-                      <p style={{ fontSize: 11.5, color: "var(--ink-400)", margin: "1px 0 0" }}>{m.description}</p>
-                    )}
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-700)" }}>Effort</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                    <span style={{ fontSize: 12, color: "var(--ink-400)" }}>{currentEffort.label}</span>
+                    <ChevronDown size={12} style={{ color: "var(--ink-400)", transition: "transform .16s ease", transform: effortOpen ? "rotate(180deg)" : "rotate(0deg)" }} />
                   </div>
-                  {active && <Check size={13} style={{ color: "var(--ink-900)", flexShrink: 0 }} />}
                 </button>
-              );
-            })}
-          </div>
-
-          {/* ── Effort row ── */}
-          <div style={{ borderTop: "1px solid rgba(0,0,0,.07)", padding: "4px 6px", position: "relative" }}>
-            <button
-              onClick={() => setEffortOpen((v) => !v)}
-              onMouseEnter={() => setEffortOpen(true)}
-              style={{
-                width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
-                padding: "8px 10px", borderRadius: 9, border: "none", cursor: "pointer",
-                background: effortOpen ? "var(--hover, rgba(0,0,0,.04))" : "transparent",
-                transition: "background .12s",
-              }}
-            >
-              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-700)" }}>Effort</span>
-              <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                <span style={{ fontSize: 12, color: "var(--ink-400)" }}>{currentEffort.label}</span>
-                <ChevronRight size={12} style={{ color: "var(--ink-400)" }} />
               </div>
-            </button>
+            </div>
 
+            {/* Right column: effort panel */}
             {effortOpen && (
-              <div style={effortPanelStyle}>
-                <div style={{ padding: "12px 14px 8px", borderBottom: "1px solid rgba(0,0,0,.07)" }}>
+              <div style={{ width: 220, borderLeft: "1px solid rgba(0,0,0,.07)", padding: "10px 6px", display: "flex", flexDirection: "column" }}>
+                <div style={{ padding: "6px 8px 10px" }}>
                   <p style={{ fontSize: 12, color: "var(--ink-500)", lineHeight: 1.5, margin: 0 }}>
                     更高 Effort = 更深入的回答，但速度更慢。
                   </p>
                 </div>
-                <div style={{ padding: "6px 6px" }}>
+                <div style={{ padding: "4px 0", flex: 1 }}>
                   {EFFORT_LEVELS.map((e) => {
                     const active = selectedEffort === e.id;
                     return (

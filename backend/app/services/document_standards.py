@@ -96,6 +96,18 @@ _STANDARDS: dict[str, dict] = {
         "style_rules": ["述职报告必须围绕职责、业绩、不足、计划组织，避免写成行业研究或泛泛总结。"],
         "render": {"kind": "report", "body_font": "宋体", "body_size": 11},
     },
+    "项目复盘": {
+        "key": "project_retrospective",
+        "display": "项目复盘",
+        "strict": True,
+        "sections": ["项目背景与目标", "过程回顾", "结果达成情况", "偏差与根因分析", "经验沉淀", "改进措施与行动计划", "附录与证据"],
+        "style_rules": [
+            "项目复盘必须形成目标、过程、结果、偏差、根因、经验和行动闭环，避免写成普通项目介绍。",
+            "所有结论应绑定证据、责任边界和可执行改进项；问题复盘应聚焦机制和事实，不做泛泛归因。",
+        ],
+        "render": {"kind": "report", "body_font": "宋体", "body_size": 11},
+    },
+    "复盘报告": {"alias_of": "项目复盘"},
     "商业计划": {
         "key": "business_plan",
         "display": "商业计划",
@@ -249,6 +261,7 @@ def skill_for_standard(report_type: str = "", brief: str = "") -> str | None:
         "lab_report": "technical-document-authoring",
         "teaching_material": "training-manual-authoring",
         "performance_review": "performance-review-authoring",
+        "project_retrospective": "project-retrospective-authoring",
         "business_plan": "business-document-authoring",
         "meeting_summary": "meeting-minutes-authoring",
         "policy": "policy-document-authoring",

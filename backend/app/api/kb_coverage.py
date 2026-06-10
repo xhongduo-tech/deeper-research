@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import os
+import asyncio
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,6 +18,11 @@ from typing import Any
 from fastapi import APIRouter
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
+
+_SCAN_CACHE: dict[str, Any] = {"at": 0.0, "data": None}
+_SCAN_CACHE_TTL = 300
+_SCAN_MAX_FILES_PER_KB = int(os.getenv("KB_COVERAGE_MAX_FILES_PER_KB", "5000"))
+_SCAN_TIME_BUDGET_SEC = float(os.getenv("KB_COVERAGE_SCAN_TIME_BUDGET_SEC", "2.5"))
 
 # ── Planned KB taxonomy (from the 315 KB plan) ───────────────────────────────
 
@@ -268,6 +275,10 @@ MISSING_SOURCES: list[dict] = [
 
 def scan_kb_filesystem() -> dict[str, dict]:
     """Scan data/kb_sources for actual file counts and sizes."""
+    now = time.monotonic()
+    if _SCAN_CACHE["data"] is not None and now - float(_SCAN_CACHE["at"]) < _SCAN_CACHE_TTL:
+        return _SCAN_CACHE["data"]
+
     # Try current dir first, then parent (for when running from backend/)
     for rel in ["data/kb_sources", "../data/kb_sources"]:
         base = Path(rel)
@@ -277,20 +288,39 @@ def scan_kb_filesystem() -> dict[str, dict]:
         return {}
 
     result: dict[str, dict] = {}
+    deadline = time.monotonic() + _SCAN_TIME_BUDGET_SEC
     for kb_dir in base.iterdir():
+        if time.monotonic() >= deadline:
+            break
         if not kb_dir.is_dir():
             continue
         kb_id = kb_dir.name.split("_")[0] + "_" + kb_dir.name.split("_")[1] if "_" in kb_dir.name else kb_dir.name
-        files = list(kb_dir.rglob("*"))
-        file_count = len([f for f in files if f.is_file()])
-        total_size = sum(f.stat().st_size for f in files if f.is_file())
-        md_count = len([f for f in files if f.is_file() and f.suffix == ".md"])
+        file_count = 0
+        md_count = 0
+        total_size = 0
+        truncated = False
+        for f in kb_dir.rglob("*"):
+            if time.monotonic() >= deadline or file_count >= _SCAN_MAX_FILES_PER_KB:
+                truncated = True
+                break
+            if not f.is_file():
+                continue
+            file_count += 1
+            if f.suffix == ".md":
+                md_count += 1
+            try:
+                total_size += f.stat().st_size
+            except OSError:
+                continue
         result[kb_id] = {
             "file_count": file_count,
             "md_count": md_count,
             "total_size_bytes": total_size,
             "total_size_mb": round(total_size / 1024 / 1024, 2),
+            "truncated": truncated,
         }
+    _SCAN_CACHE["at"] = time.monotonic()
+    _SCAN_CACHE["data"] = result
     return result
 
 
@@ -500,10 +530,10 @@ def build_network_graph_data() -> dict[str, Any]:
 @router.get("/kb-coverage")
 async def get_kb_coverage():
     """Get comprehensive KB coverage analysis."""
-    return compute_coverage()
+    return await asyncio.to_thread(compute_coverage)
 
 
 @router.get("/kb-coverage/network")
 async def get_kb_network_graph():
     """Get network graph data for visualization."""
-    return build_network_graph_data()
+    return await asyncio.to_thread(build_network_graph_data)

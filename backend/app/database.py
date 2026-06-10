@@ -108,3 +108,31 @@ async def run_migrations():
                     logger.info("[migration] Added column %s.%s", table, column)
             except Exception as e:
                 logger.warning("[migration] Skipped %s.%s: %s", table, column, e)
+
+        # ── Project dimension migrations ──────────────────────────────────────
+        try:
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name VARCHAR(200) NOT NULL,
+                    description TEXT DEFAULT '',
+                    owner_id INTEGER REFERENCES users(id),
+                    status VARCHAR(20) DEFAULT 'active',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            logger.info("[migration] Ensured projects table exists")
+        except Exception as e:
+            logger.warning("[migration] projects table creation skipped: %s", e)
+
+        try:
+            result = await conn.execute(text("PRAGMA table_info(knowledge_bases)"))
+            cols = {row[1] for row in result.fetchall()}
+            if "project_id" not in cols:
+                await conn.execute(
+                    text("ALTER TABLE knowledge_bases ADD COLUMN project_id INTEGER REFERENCES projects(id)")
+                )
+                logger.info("[migration] Added column knowledge_bases.project_id")
+        except Exception as e:
+            logger.warning("[migration] Skipped knowledge_bases.project_id: %s", e)

@@ -41,9 +41,9 @@ async def register(data: RegisterRequest, db: AsyncSession = Depends(get_db)):
 async def recover(data: RecoverRequest, db: AsyncSession = Depends(get_db)):
     try:
         new_password = await recover_password(
-            db, data.auth_id, data.username, data.department, data.scene,
+            db, data.auth_id, data.username, data.department, data.scene, data.new_password,
         )
-        return {"message": f"密码已重置，新密码为: {new_password}", "new_password": new_password}
+        return {"message": "密码已重置", "new_password": new_password}
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 

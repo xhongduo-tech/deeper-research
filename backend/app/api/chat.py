@@ -118,6 +118,7 @@ async def _build_or_get_chat_report(
 
     report = Report(
         user_id=current_user.id,
+        project_id=data.project_id,
         title=prompt[:100],
         brief=prompt,
         report_type="普通问答",
@@ -147,24 +148,60 @@ async def _resolve_kb_ids(db: AsyncSession, kb_ids: list[int], include_system: b
     return all_ids
 
 
-async def _build_rag_context(db: AsyncSession, kb_ids: list[int], query: str) -> str:
-    """Search provided KBs and return relevant chunks as context string."""
+async def _build_rag_context(
+    db: AsyncSession, kb_ids: list[int], query: str
+) -> tuple[str, list[dict]]:
+    """Search provided KBs.
+
+    Returns:
+        (context_string, sources_list)
+        sources_list items: {"source": str, "snippet": str}
+    """
     if not kb_ids:
-        return ""
+        return "", []
     from app.services.rag_service import search_kb
     try:
         results = await search_kb(db, kb_ids=kb_ids, query=query, top_k=6, score_threshold=0.15)
         if not results:
-            return ""
-        snippets = []
+            return "", []
+        snippets: list[str] = []
+        sources: list[dict] = []
         for r in results:
             content = r.get("content", "")
             source = r.get("source", "未知来源")
             if content:
                 snippets.append(f"【{source}】{content[:400]}")
-        return "\n\n".join(snippets)
+                sources.append({"source": source, "snippet": content[:120]})
+        return "\n\n".join(snippets), sources
     except Exception:
-        return ""
+        return "", []
+
+
+# ── Layer 3: 本体论意图路由器 ──────────────────────────────────────────────────
+# 轻量规则匹配（无 LLM 调用），为特定领域注入专业系统提示。
+
+_ONTOLOGY_SYSTEM_HINTS: dict[str, str] = {
+    "business_research": (
+        "当前场景：商业研究与行业分析。请使用行业标准术语，区分宏观/中观/微观层次，"
+        "引用数据时注明时效性，结论需有来源支撑。对不确定信息使用【可能】【或】【估计】等限定词。"
+    ),
+    "structured_data": (
+        "当前场景：结构化数据分析。优先用数字和表格呈现结论，指明字段名/维度名，"
+        "区分绝对值与比率，说明计算逻辑，避免模糊描述。"
+    ),
+    "software_engineering": (
+        "当前场景：代码诊断与工程分析。回答须包含：问题根因、最小可复现示例、修复方案、"
+        "验证步骤。引用具体行号/函数名/类名，注明适用的语言版本或框架版本。"
+    ),
+    "document_retrieval": (
+        "当前场景：文档问答。回答须明确引用原文依据，区分文档内容与你自身推断，"
+        "无法从文档中找到的信息须明确说明。"
+    ),
+    "graph_knowledge": (
+        "当前场景：知识图谱。注意区分实体、关系、属性三类概念，"
+        "回答时用（主体 → 关系 → 客体）的三元组形式说明核心结构。"
+    ),
+}
 
 
 async def _build_llm_messages(
@@ -174,31 +211,50 @@ async def _build_llm_messages(
     kb_ids: list[int] | None = None,
     include_system_kb: bool = False,
     query: str = "",
-) -> list[dict]:
+) -> tuple[list[dict], list[dict], str]:
+    """Build LLM message list with RAG context and ontology intent routing.
+
+    Returns:
+        (llm_messages, rag_sources, intent_domain)
+    """
     history = await get_report_messages(db, report.id, limit=20)
-    # Resolve and search KBs if requested
+
+    # ── Layer 1 + 2: RAG 检索 ────────────────────────────────────────────────
     rag_context = ""
+    rag_sources: list[dict] = []
     if kb_ids or include_system_kb:
         resolved_ids = await _resolve_kb_ids(db, kb_ids or [], include_system_kb)
         if resolved_ids:
-            rag_context = await _build_rag_context(db, resolved_ids, query)
+            rag_context, rag_sources = await _build_rag_context(db, resolved_ids, query)
 
-    llm_messages: list[dict] = [
-        {
-            "role": "system",
-            "content": (
-                "你是 DataAgent 的普通问答助手。用户没有选择 PPT、文档或 Excel 智能体时，"
-                "你应像 Claude Chat 一样直接回答问题。回答要清晰、实用、自然；"
-                "需要结构化时使用 Markdown，可使用 **加粗**、*斜体*、列表和 Markdown 表格。"
-                "需要提高可读性时可少量使用增强样式，但必须遵守固定语义："
-                "{red:重要结论/风险/必须注意的动作}，{blue:文件名、对象名、表名或引用名称}，"
-                "==核心关键词==用于同一类需要反复识别的主题词；同一类核心内容只要出现就保持一致标注。"
-                "{soft-red:警示短语}、{soft-blue:信息短语}、{badge:短标签}只用于很短内容。"
-                "不要为了好看而染色；不要整句整段染色；每段最多 1-2 处增强标注。"
-                "如果信息不足，先说明假设并给出可执行建议。不要假装已经生成文件。"
-            ),
-        }
-    ]
+    # ── Layer 3: 本体论意图路由（纯关键词，零延迟）──────────────────────────
+    intent_domain = "general"
+    ontology_hint = ""
+    if query:
+        try:
+            from app.knowledge.intent_router import IntentRouter
+            intent = await IntentRouter.route(query, use_llm=False)
+            intent_domain = intent.ontology_domain
+            ontology_hint = _ONTOLOGY_SYSTEM_HINTS.get(intent_domain, "")
+        except Exception:
+            pass  # 路由失败不影响主流程
+
+    # ── 构建消息列表 ─────────────────────────────────────────────────────────
+    base_system = (
+        "你是 DataAgent 的智能问答助手。回答要清晰、实用、自然；"
+        "需要结构化时使用 Markdown，可使用 **加粗**、*斜体*、列表和 Markdown 表格。"
+        "需要提高可读性时可少量使用增强样式，但必须遵守固定语义："
+        "{red:重要结论/风险/必须注意的动作}，{blue:文件名、对象名、表名或引用名称}，"
+        "==核心关键词==用于同一类需要反复识别的主题词；同一类核心内容只要出现就保持一致标注。"
+        "{soft-red:警示短语}、{soft-blue:信息短语}、{badge:短标签}只用于很短内容。"
+        "不要为了好看而染色；不要整句整段染色；每段最多 1-2 处增强标注。"
+        "如果信息不足，先说明假设并给出可执行建议。不要假装已经生成文件。"
+    )
+    if ontology_hint:
+        base_system = base_system + "\n\n" + ontology_hint
+
+    llm_messages: list[dict] = [{"role": "system", "content": base_system}]
+
     if rag_context:
         llm_messages.append({
             "role": "system",
@@ -212,7 +268,8 @@ async def _build_llm_messages(
     for msg in history[-12:]:
         if msg.role in {"user", "assistant"} and (msg.content or "").strip():
             llm_messages.append({"role": msg.role, "content": msg.content})
-    return llm_messages
+
+    return llm_messages, rag_sources, intent_domain
 
 
 async def _selected_model_profile(db: AsyncSession, model_id: str | None) -> dict | None:
@@ -294,7 +351,7 @@ async def send_plain_chat(
             messages=[MessageResponse.model_validate(m) for m in messages],
         )
 
-    llm_messages = await _build_llm_messages(
+    llm_messages, rag_sources, intent_domain = await _build_llm_messages(
         db, report, uploaded_texts,
         kb_ids=data.kb_ids, include_system_kb=data.include_system_kb, query=prompt,
     )
@@ -318,10 +375,13 @@ async def send_plain_chat(
     await _persist_assistant_answer(db, report, answer)
 
     messages = await get_report_messages(db, report.id, limit=100)
+    from app.schemas.message import RagSource
     return ChatResponse(
         report_id=report.id,
         answer=answer,
         messages=[MessageResponse.model_validate(m) for m in messages],
+        sources=[RagSource(**s) for s in rag_sources],
+        intent_domain=intent_domain if intent_domain != "general" else None,
     )
 
 
@@ -368,7 +428,10 @@ async def regenerate_plain_chat(
             messages=[MessageResponse.model_validate(m) for m in messages],
         )
 
-    llm_messages = await _build_llm_messages(db, report, [])
+    llm_messages, rag_sources, intent_domain = await _build_llm_messages(
+        db, report, [], query=prompt,
+        kb_ids=[], include_system_kb=True,
+    )
     profile = await _selected_model_profile(db, data.model_id)
     try:
         with effort_context(data.effort):
@@ -387,10 +450,13 @@ async def regenerate_plain_chat(
 
     await _persist_assistant_answer(db, report, answer)
     messages = await get_report_messages(db, report.id, limit=100)
+    from app.schemas.message import RagSource
     return ChatResponse(
         report_id=report.id,
         answer=answer,
         messages=[MessageResponse.model_validate(m) for m in messages],
+        sources=[RagSource(**s) for s in rag_sources],
+        intent_domain=intent_domain if intent_domain != "general" else None,
     )
 
 
@@ -436,7 +502,7 @@ async def stream_plain_chat(
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    llm_messages = await _build_llm_messages(
+    llm_messages, rag_sources, intent_domain = await _build_llm_messages(
         db, report, uploaded_texts,
         kb_ids=data.kb_ids, include_system_kb=data.include_system_kb, query=prompt,
     )
@@ -484,6 +550,8 @@ async def stream_plain_chat(
                     "type": "done",
                     "report_id": report.id,
                     "answer": answer,
+                    "sources": rag_sources,
+                    "intent_domain": intent_domain if intent_domain != "general" else None,
                 })
             except Exception as exc:
                 async with async_session() as write_db:

@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from "react";
-import { Search, MessageSquare, Pin, PinOff, Trash2, FileText, BarChart2, Presentation, Plus, Clock } from "lucide-react";
+import { Search, MessageSquare, Pin, PinOff, Trash2, FileText, BarChart2, Presentation, Plus, Clock, FolderOpen } from "lucide-react";
 import type { Conversation } from "../App";
+import { api, type Project } from "../lib/api";
 
 // Ordered groups — must stay in sync with Conversation["group"] union in App.tsx
 const GROUPS = ["今天", "昨天", "7 天内", "30 天内", "更早"] as const;
 type GroupLabel = typeof GROUPS[number];
-type TabType = "chat" | "create";
+type TabType = "chat" | "project";
 
 function isChatItem(c: Conversation) {
   return !!c.tags?.includes("问答");
@@ -50,6 +51,7 @@ export function SearchHistoryPanel({
   const [mounted, setMounted] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>("chat");
   const [searchFocused, setSearchFocused] = useState(false);
+  const [projects, setProjects] = useState<Project[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -69,6 +71,15 @@ export function SearchHistoryPanel({
     return () => document.removeEventListener("keydown", handler);
   }, [open, onClose]);
 
+  useEffect(() => {
+    if (!open) return;
+    api.listProjects().then((res) => {
+      setProjects(res.items || []);
+    }).catch(() => {
+      setProjects([]);
+    });
+  }, [open]);
+
   if (!mounted) return null;
 
   const isSearching = query.trim().length > 0;
@@ -80,18 +91,16 @@ export function SearchHistoryPanel({
     : conversations;
 
   const chatItems = filtered.filter(isChatItem);
-  const createItems = filtered.filter((c) => !isChatItem(c));
-  const activeItems = activeTab === "chat" ? chatItems : createItems;
 
-  const pinned = activeItems.filter((c) => c.pinned);
+  const pinned = chatItems.filter((c) => c.pinned);
   const groupedItems: Array<{ label: GroupLabel; items: Conversation[] }> = isSearching
     ? []
     : GROUPS.map((g) => ({
         label: g,
-        items: activeItems.filter((c) => !c.pinned && c.group === g),
+        items: chatItems.filter((c) => !c.pinned && c.group === g),
       })).filter((g) => g.items.length > 0);
 
-  const searchResults = isSearching ? activeItems.filter((c) => !c.pinned) : [];
+  const searchResults = isSearching ? chatItems.filter((c) => !c.pinned) : [];
 
   return (
     <div
@@ -110,7 +119,7 @@ export function SearchHistoryPanel({
           position: relative;
           display: flex;
           align-items: center;
-          padding: 9px 136px 9px 10px;
+          padding: 13px 136px 13px 10px;
           border-radius: 10px;
           cursor: pointer;
           gap: 12px;
@@ -151,7 +160,7 @@ export function SearchHistoryPanel({
           font-size: 12px;
           font-weight: 600;
           color: var(--ink-400);
-          padding: 12px 10px 4px;
+          padding: 18px 10px 6px;
         }
         .shp-empty {
           display: flex;
@@ -163,24 +172,65 @@ export function SearchHistoryPanel({
           color: var(--ink-400);
           font-size: 14px;
         }
-        .shp-artifact-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-          gap: 12px;
-          margin-top: 4px;
+        /* Project list */
+        .shp-project-list {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
         }
-        .shp-artifact-card {
-          border-radius: 14px;
+        .shp-project-card {
+          border-radius: 16px;
           border: 1px solid var(--border);
           background: var(--bg-elevated, #fff);
-          cursor: pointer;
           overflow: hidden;
-          transition: box-shadow 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+          transition: box-shadow 0.15s ease, border-color 0.15s ease;
         }
-        .shp-artifact-card:hover {
+        .shp-project-card:hover {
           box-shadow: 0 4px 16px rgba(0,0,0,.08);
-          transform: translateY(-2px);
           border-color: rgba(0,0,0,.15);
+        }
+        .shp-project-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 12px 16px;
+          border-bottom: 1px solid var(--border);
+          background: rgba(0,0,0,.02);
+        }
+        .shp-project-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 1px;
+          background: var(--border);
+        }
+        .shp-project-cell {
+          background: var(--bg-elevated, #fff);
+          padding: 12px 14px;
+          cursor: pointer;
+          transition: background 0.12s ease;
+          min-height: 72px;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .shp-project-cell:hover { background: var(--hover, rgba(0,0,0,.04)); }
+        .shp-project-cell-title {
+          font-size: 13px;
+          font-weight: 500;
+          color: var(--ink-800);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          display: -webkit-box;
+          -webkit-line-clamp: 2;
+          -webkit-box-orient: vertical;
+          line-height: 1.4;
+        }
+        .shp-project-cell-time {
+          font-size: 11px;
+          color: var(--ink-400);
+          display: flex;
+          align-items: center;
+          gap: 4px;
         }
         /* Tab pills */
         .shp-tab {
@@ -204,7 +254,7 @@ export function SearchHistoryPanel({
           font-weight: 600;
         }
         .shp-tab:not(.active):hover { background: rgba(0,0,0,.04); color: var(--ink-700); }
-        /* Search input focus — blue border like Claude */
+        /* Search input focus */
         .shp-search-wrap {
           display: flex;
           align-items: center;
@@ -252,12 +302,12 @@ export function SearchHistoryPanel({
       `}</style>
 
       <div className="flex-1 min-h-0 overflow-y-auto">
-        <div style={{ maxWidth: 800, margin: "0 auto", padding: "36px 20px 48px" }}>
+        <div style={{ maxWidth: 800, margin: "0 auto", padding: "56px 20px 48px" }}>
 
           {/* ── Header row: [title] [tabs] [spacer] [+ 新建对话] ── */}
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 28 }}>
             <h1 style={{ fontSize: 22, fontWeight: 700, color: "var(--ink-900)", letterSpacing: "-0.02em", flexShrink: 0 }}>
-              历史记录
+              对话和项目
             </h1>
             {/* Inline tabs */}
             <div style={{ display: "flex", gap: 3, marginLeft: 10 }}>
@@ -271,12 +321,12 @@ export function SearchHistoryPanel({
                 )}
               </button>
               <button
-                className={`shp-tab${activeTab === "create" ? " active" : ""}`}
-                onClick={() => setActiveTab("create")}
+                className={`shp-tab${activeTab === "project" ? " active" : ""}`}
+                onClick={() => setActiveTab("project")}
               >
-                创作
-                {createItems.length > 0 && (
-                  <span style={{ fontSize: 11, opacity: 0.65 }}>{createItems.length}</span>
+                项目
+                {projects.length > 0 && (
+                  <span style={{ fontSize: 11, opacity: 0.65 }}>{projects.length}</span>
                 )}
               </button>
             </div>
@@ -291,7 +341,7 @@ export function SearchHistoryPanel({
           </div>
 
           {/* ── Search bar with Claude-style blue focus ── */}
-          <div className={`shp-search-wrap${searchFocused ? " focused" : ""}`} style={{ marginBottom: 18 }}>
+          <div className={`shp-search-wrap${searchFocused ? " focused" : ""}`} style={{ marginBottom: 24 }}>
             <Search style={{ width: 15, height: 15, color: searchFocused ? "var(--brand, #5b4ee8)" : "var(--ink-400)", flexShrink: 0, transition: "color .15s" }} />
             <input
               ref={inputRef}
@@ -300,7 +350,7 @@ export function SearchHistoryPanel({
               onChange={(e) => setQuery(e.target.value)}
               onFocus={() => setSearchFocused(true)}
               onBlur={() => setSearchFocused(false)}
-              placeholder={activeTab === "chat" ? "搜索对话…" : "搜索创作…"}
+              placeholder={activeTab === "chat" ? "搜索对话…" : "搜索项目…"}
             />
             {query && (
               <button
@@ -313,94 +363,76 @@ export function SearchHistoryPanel({
           </div>
 
           {/* ── Content ── */}
-          {activeItems.length === 0 ? (
-            <div className="shp-empty">
-              <MessageSquare style={{ width: 36, height: 36, opacity: 0.3 }} />
-              <span>{isSearching ? "没有找到相关记录" : activeTab === "chat" ? "暂无对话记录" : "暂无创作记录"}</span>
-            </div>
-          ) : activeTab === "chat" ? (
-            <div>
-              {pinned.length > 0 && (
-                <>
-                  <div className="shp-section-label">📌 已置顶</div>
-                  {pinned.map((item) => (
-                    <ChatRow key={item.id} item={item}
-                      onSelect={() => { onSelectConversation(item.id); onClose(); }}
-                      onPin={() => onPinConversation?.(item.id)}
-                      onDelete={() => onDeleteConversation?.(item.id)}
-                    />
-                  ))}
-                </>
-              )}
-              {isSearching ? (
-                <>
-                  {pinned.length > 0 && searchResults.length > 0 && <div className="shp-section-label">其他结果</div>}
-                  {searchResults.map((item) => (
-                    <ChatRow key={item.id} item={item}
-                      onSelect={() => { onSelectConversation(item.id); onClose(); }}
-                      onPin={() => onPinConversation?.(item.id)}
-                      onDelete={() => onDeleteConversation?.(item.id)}
-                    />
-                  ))}
-                </>
-              ) : (
-                groupedItems.map((group) => (
-                  <div key={group.label}>
-                    <div className="shp-section-label">{group.label}</div>
-                    {group.items.map((item) => (
+          {activeTab === "chat" ? (
+            chatItems.length === 0 ? (
+              <div className="shp-empty">
+                <MessageSquare style={{ width: 36, height: 36, opacity: 0.3 }} />
+                <span>{isSearching ? "没有找到相关记录" : "暂无对话记录"}</span>
+              </div>
+            ) : (
+              <div>
+                {pinned.length > 0 && (
+                  <>
+                    <div className="shp-section-label">📌 已置顶</div>
+                    {pinned.map((item) => (
                       <ChatRow key={item.id} item={item}
                         onSelect={() => { onSelectConversation(item.id); onClose(); }}
                         onPin={() => onPinConversation?.(item.id)}
                         onDelete={() => onDeleteConversation?.(item.id)}
                       />
                     ))}
-                  </div>
-                ))
-              )}
-            </div>
-          ) : (
-            <div>
-              {pinned.length > 0 && (
-                <>
-                  <div className="shp-section-label">📌 已置顶</div>
-                  <div className="shp-artifact-grid" style={{ marginBottom: 20 }}>
-                    {pinned.map((item) => (
-                      <ArtifactCard key={item.id} item={item}
+                  </>
+                )}
+                {isSearching ? (
+                  <>
+                    {pinned.length > 0 && searchResults.length > 0 && <div className="shp-section-label">其他结果</div>}
+                    {searchResults.map((item) => (
+                      <ChatRow key={item.id} item={item}
                         onSelect={() => { onSelectConversation(item.id); onClose(); }}
                         onPin={() => onPinConversation?.(item.id)}
                         onDelete={() => onDeleteConversation?.(item.id)}
                       />
                     ))}
-                  </div>
-                </>
-              )}
-              {isSearching ? (
-                <div className="shp-artifact-grid">
-                  {searchResults.map((item) => (
-                    <ArtifactCard key={item.id} item={item}
-                      onSelect={() => { onSelectConversation(item.id); onClose(); }}
-                      onPin={() => onPinConversation?.(item.id)}
-                      onDelete={() => onDeleteConversation?.(item.id)}
-                    />
-                  ))}
-                </div>
-              ) : (
-                groupedItems.map((group) => (
-                  <div key={group.label}>
-                    <div className="shp-section-label">{group.label}</div>
-                    <div className="shp-artifact-grid" style={{ marginBottom: 20 }}>
+                  </>
+                ) : (
+                  groupedItems.map((group) => (
+                    <div key={group.label}>
+                      <div className="shp-section-label">{group.label}</div>
                       {group.items.map((item) => (
-                        <ArtifactCard key={item.id} item={item}
+                        <ChatRow key={item.id} item={item}
                           onSelect={() => { onSelectConversation(item.id); onClose(); }}
                           onPin={() => onPinConversation?.(item.id)}
                           onDelete={() => onDeleteConversation?.(item.id)}
                         />
                       ))}
                     </div>
-                  </div>
-                ))
-              )}
-            </div>
+                  ))
+                )}
+              </div>
+            )
+          ) : (
+            projects.length === 0 ? (
+              <div className="shp-empty">
+                <FolderOpen style={{ width: 36, height: 36, opacity: 0.3 }} />
+                <span>暂无项目</span>
+              </div>
+            ) : (
+              <div className="shp-project-list">
+                {projects.map((project) => {
+                  const projectConvs = conversations
+                    .filter((c) => c.project_id === project.id)
+                    .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+                  return (
+                    <ProjectCard
+                      key={project.id}
+                      project={project}
+                      conversations={projectConvs}
+                      onSelectConversation={(id) => { onSelectConversation(id); onClose(); }}
+                    />
+                  );
+                })}
+              </div>
+            )
           )}
 
         </div>
@@ -452,53 +484,51 @@ function ChatRow({ item, onSelect, onPin, onDelete }: {
   );
 }
 
-// ── Artifact card ──────────────────────────────────────────────────────────
+// ── Project card with 九宫格 ───────────────────────────────────────────────
 
-function ArtifactCard({ item, onSelect, onPin, onDelete }: {
-  item: Conversation; onSelect: () => void; onPin: () => void; onDelete: () => void;
+function ProjectCard({
+  project,
+  conversations,
+  onSelectConversation,
+}: {
+  project: Project;
+  conversations: Conversation[];
+  onSelectConversation: (id: string) => void;
 }) {
-  const [hovered, setHovered] = useState(false);
-  const previewText = stripMarkdown(item.preview || "");
-  const tag = item.tags?.[0];
+  const [hoveredCell, setHoveredCell] = useState<string | null>(null);
 
   return (
-    <div
-      className="shp-artifact-card"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      onClick={onSelect}
-    >
-      <div style={{ position: "relative", padding: "14px 14px 10px", background: "rgba(0,0,0,.02)", minHeight: 120 }}>
-        {tag && (
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "2px 7px", borderRadius: 6, marginBottom: 8, background: "rgba(0,0,0,.06)", fontSize: 11, fontWeight: 600, color: "var(--ink-500)" }}>
-            {getCreateIcon(item.tags)}
-            {tag}
-          </div>
-        )}
-        <p style={{ fontSize: 12, lineHeight: 1.6, color: "var(--ink-500)", display: "-webkit-box", WebkitLineClamp: 5, WebkitBoxOrient: "vertical", overflow: "hidden", whiteSpace: "pre-line" }}>
-          {previewText || "暂无内容预览"}
-        </p>
-        <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 28, background: "linear-gradient(transparent, rgba(0,0,0,.02))", pointerEvents: "none" }} />
-        {hovered && (
-          <div style={{ position: "absolute", top: 8, right: 8, display: "flex", gap: 3 }} onClick={(e) => e.stopPropagation()}>
-            <button className="shp-icon-btn" style={{ background: "#fff", border: "1px solid rgba(0,0,0,.1)" }} title={item.pinned ? "取消置顶" : "置顶"} onClick={onPin}>
-              {item.pinned ? <PinOff style={{ width: 12, height: 12 }} /> : <Pin style={{ width: 12, height: 12 }} />}
-            </button>
-            <button className="shp-icon-btn danger" style={{ background: "#fff", border: "1px solid rgba(0,0,0,.1)" }} title="删除" onClick={onDelete}>
-              <Trash2 style={{ width: 12, height: 12 }} />
-            </button>
-          </div>
-        )}
+    <div className="shp-project-card">
+      <div className="shp-project-header">
+        <FolderOpen size={15} style={{ color: "var(--ink-500)", flexShrink: 0 }} />
+        <span style={{ fontSize: 14, fontWeight: 600, color: "var(--ink-800)", flex: 1 }}>{project.name}</span>
+        <span style={{ fontSize: 11.5, color: "var(--ink-400)", fontWeight: 500 }}>
+          {conversations.length} 个对话
+        </span>
       </div>
-      <div style={{ padding: "9px 14px 11px", borderTop: "1px solid var(--border)" }}>
-        <p style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink-900)", marginBottom: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {item.title}
-        </p>
-        <div style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--ink-400)", fontSize: 11.5 }}>
-          <Clock style={{ width: 10, height: 10 }} />
-          <span>{item.time}</span>
+      {conversations.length > 0 ? (
+        <div className="shp-project-grid">
+          {conversations.map((c) => (
+            <div
+              key={c.id}
+              className="shp-project-cell"
+              onClick={() => onSelectConversation(c.id)}
+              onMouseEnter={() => setHoveredCell(c.id)}
+              onMouseLeave={() => setHoveredCell(null)}
+            >
+              <div className="shp-project-cell-title">{c.title || "无标题对话"}</div>
+              <div className="shp-project-cell-time">
+                <Clock style={{ width: 10, height: 10 }} />
+                <span>{c.time}</span>
+              </div>
+            </div>
+          ))}
         </div>
-      </div>
+      ) : (
+        <div style={{ padding: "20px 16px", textAlign: "center", fontSize: 12.5, color: "var(--ink-400)" }}>
+          该项目暂无对话
+        </div>
+      )}
     </div>
   );
 }

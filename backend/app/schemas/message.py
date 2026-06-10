@@ -16,6 +16,7 @@ class ChatRequest(BaseModel):
     uploaded_files: list[int] = []
     kb_ids: list[int] = []
     include_system_kb: bool = False
+    project_id: int | None = None
 
 
 class MessageResponse(BaseModel):
@@ -31,7 +32,14 @@ class MessageResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class RagSource(BaseModel):
+    source: str
+    snippet: str
+
+
 class ChatResponse(BaseModel):
     report_id: int
     answer: str
     messages: list[MessageResponse]
+    sources: list[RagSource] = []
+    intent_domain: str | None = None  # ontology domain detected for this query

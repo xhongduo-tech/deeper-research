@@ -251,6 +251,78 @@ class StructuredDataService:
         conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
         conn.execute("DELETE FROM __registry__ WHERE table_name = ?", [table_name])
 
+    async def nl_query(
+        self,
+        kb_id: str,
+        question: str,
+        *,
+        max_retries: int = 2,
+    ) -> dict:
+        """自然语言 → SQL → 执行，返回结果字典（与 DuckDBEngine 接口对齐）."""
+        from app.pipeline.llm_helpers import call_llm_json
+
+        schema_text = self.describe_tables(kb_id)
+        if not schema_text:
+            return {"success": False, "error": "该知识库没有结构化数据表，请先上传 CSV / Excel 文件。", "sql": ""}
+
+        # Include table relationships for better multi-table queries
+        relationships = self.get_table_relationships(kb_id)
+        rel_text = ""
+        if relationships:
+            rel_text = "\n表间关联:\n" + "\n".join(
+                f"  {r['table_a']}.{r['col_a']} ↔ {r['table_b']}.{r['col_b']} ({r['reason']})"
+                for r in relationships[:6]
+            )
+
+        # Include few-shot examples
+        few_shot = self.get_few_shot_examples(kb_id)
+        few_shot_text = ""
+        if few_shot:
+            few_shot_text = "\n参考查询:\n" + "\n".join(
+                f"  Q: {q}\n  SQL: {sql}"
+                for q, sql in few_shot[:3]
+            )
+
+        system_prompt = f"""你是专业的 SQL 分析师。根据用户问题和数据库 Schema 生成 DuckDB SQL 查询。
+仅输出 JSON: {{"sql": "SELECT ..."}}
+不要添加任何解释。
+SQL 方言为 DuckDB，支持 PIVOT/UNPIVOT、窗口函数、正则、日期函数。
+
+可用数据表 Schema:
+{schema_text}{rel_text}{few_shot_text}"""
+
+        user_msg = f"问题: {question}"
+        last_error: str | None = None
+        generated_sql = ""
+
+        for attempt in range(max_retries + 1):
+            if attempt > 0 and last_error:
+                user_msg = f"上次 SQL 报错: {last_error}\n请修正 SQL 并重新生成。\n问题: {question}"
+
+            try:
+                resp = await call_llm_json(system_prompt, user_msg)
+                sql = resp.get("sql", "").strip()
+                if not sql:
+                    last_error = "LLM 返回空 SQL"
+                    continue
+                generated_sql = sql
+                result = self.execute_query(kb_id, sql, question=question)
+                return {
+                    "success": True,
+                    "sql": sql,
+                    "rows": result,
+                    "row_count": len(result),
+                }
+            except ValueError as ve:
+                last_error = str(ve)
+                # Non-SELECT queries are rejected; don't retry
+                return {"success": False, "error": last_error, "sql": generated_sql}
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning("NL→SQL attempt %d failed for kb=%s: %s", attempt, kb_id, exc)
+
+        return {"success": False, "error": f"SQL 生成失败: {last_error}", "sql": generated_sql}
+
     def close(self, kb_id: str) -> None:
         """Close and remove the DuckDB connection for a KB."""
         with _lock:

@@ -1,9 +1,10 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import {
   Plus, Presentation, FileText, Table2, Code2,
-  Layers, Database,
-  PanelLeftClose, ChevronDown, Search, LogOut,
-  Pin, Trash2, User, MessageSquare,
+  Database, FolderOpen, ChevronRight,
+  PanelLeftClose, ChevronDown, LogOut,
+  Pin, Trash2, User, MessageSquare, MoreHorizontal,
+  Clock, Pencil, GitGraph,
 } from "lucide-react";
 import { Avatar, AvatarFallback } from "./ui/avatar";
 import { ScrollArea } from "./ui/scroll-area";
@@ -11,7 +12,7 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/t
 import logoImg from "../../imports/deep-research.png";
 import { ImageWithFallback } from "./figma/ImageWithFallback";
 import type { Conversation } from "../App";
-import type { UserInfo } from "../lib/api";
+import { api, type UserInfo, type Project } from "../lib/api";
 
 export type PageKey =
   | "home"
@@ -19,21 +20,19 @@ export type PageKey =
   | "ppt"
   | "html"
   | "sheet"
-  | "datalab"           // Table-Agent 数据交互实验室（场景 B/C）
-  | "knowledge";        // 知识库管理（持久化 Vector RAG）
+  | "knowledge";        // 数据库管理（持久化 Vector RAG）
 
 const LOCKED_PAGES = new Set<PageKey>(["ppt", "sheet"]);
 
 const NAV_STUDIO: { key: PageKey; label: string; icon: React.ElementType; badge?: string }[] = [
   { key: "docs",  label: "文档",  icon: FileText },
-  { key: "ppt",   label: "PPT",   icon: Presentation, badge: "即将上线" },
+  { key: "ppt",   label: "PPT",   icon: Presentation, badge: "即将开放" },
   { key: "html",  label: "网页",  icon: Code2 },
-  { key: "sheet", label: "表格",  icon: Table2,        badge: "即将上线" },
+  { key: "sheet", label: "表格",  icon: Table2, badge: "即将开放" },
 ];
 
 const NAV_EXPLORE: { key: PageKey; label: string; icon: React.ElementType }[] = [
-  { key: "knowledge", label: "知识库",  icon: Database },
-  { key: "datalab",   label: "DataLab", icon: Layers },
+  { key: "knowledge", label: "数据库", icon: Database },
 ];
 
 const EXPANDED_W  = 256;
@@ -61,10 +60,14 @@ function SidebarTip({ label, children, show }: { label: string; children: React.
 
 export function Sidebar({
   active, onSelect, collapsed, onToggle,
-  isLoggedIn, onLogout, onNeedLogin, user, onSearchHistory,
+  isLoggedIn, onLogout, onNeedLogin, user,
   onNewConversation, onSelectConversation,
-  searchHistoryOpen = false,
   conversations = [], onPinConversation, onDeleteConversation,
+  currentProjectId,
+  onSelectProject,
+  onOpenHistory,
+  onOpenProjectDB,
+  onOpenProjectGraph,
 }: {
   active: PageKey;
   onSelect: (k: PageKey) => void;
@@ -76,17 +79,43 @@ export function Sidebar({
   onLogout: () => void;
   onNeedLogin: () => void;
   user?: UserInfo | null;
-  onSearchHistory: () => void;
-  searchHistoryOpen?: boolean;
   conversations?: Conversation[];
   onPinConversation?: (id: string) => void;
   onDeleteConversation?: (id: string) => void;
+  currentProjectId?: number | null;
+  onSelectProject?: (projectId: number | null) => void;
+  onOpenHistory?: () => void;
+  onOpenProjectDB?: (projectId: number) => void;
+  onOpenProjectGraph?: (projectId: number) => void;
 }) {
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [hoveredId, setHoveredId]       = useState<string | null>(null);
-  const [showAllRecent, setShowAllRecent] = useState(false);
+  const [projects, setProjects]         = useState<Project[]>([]);
+  const [expandedProjectIds, setExpandedProjectIds] = useState<Set<number>>(new Set());
+  const [projectsSectionExpanded, setProjectsSectionExpanded] = useState(true);
+  const [hoveredProjectId, setHoveredProjectId] = useState<number | null>(null);
+  const [activeProjectMenuId, setActiveProjectMenuId] = useState<number | null>(null);
+  const [editingProjectId, setEditingProjectId] = useState<number | null>(null);
+  const [editingProjectName, setEditingProjectName] = useState("");
+  const [pinnedProjectIds, setPinnedProjectIds] = useState<Set<number>>(new Set());
+  const [confirmDelete, setConfirmDelete] = useState<{ open: boolean; project: Project | null }>({ open: false, project: null });
   const menuRef       = useRef<HTMLDivElement>(null);
-  const recentScrollRef = useRef<HTMLDivElement>(null);
+  const projectMenuRef = useRef<HTMLDivElement>(null);
+  const projectRowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+
+  // Load projects
+  const loadProjects = useCallback(async () => {
+    try {
+      const res = await api.listProjects();
+      setProjects(res.items || []);
+    } catch {
+      setProjects([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isLoggedIn) loadProjects();
+  }, [isLoggedIn, loadProjects]);
 
   useEffect(() => {
     if (!showUserMenu) return;
@@ -99,13 +128,23 @@ export function Sidebar({
   }, [showUserMenu]);
 
   useEffect(() => {
-    if (!showAllRecent) return;
-    const t = window.setTimeout(() => {
-      const vp = recentScrollRef.current?.querySelector<HTMLElement>("[data-slot='scroll-area-viewport']");
-      vp?.scrollBy({ top: 96, behavior: "smooth" });
-    }, 80);
-    return () => window.clearTimeout(t);
-  }, [showAllRecent]);
+    if (activeProjectMenuId == null) return;
+    const h = (e: MouseEvent) => {
+      if (projectMenuRef.current && !projectMenuRef.current.contains(e.target as Node))
+        setActiveProjectMenuId(null);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [activeProjectMenuId]);
+
+  const toggleProject = (projectId: number) => {
+    setExpandedProjectIds(prev => {
+      const next = new Set(prev);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
+    });
+  };
 
   const fade: React.CSSProperties = {
     opacity: collapsed ? 0 : 1,
@@ -123,7 +162,7 @@ export function Sidebar({
 
   function SectionLabel({ children, englishSub }: { children: string; englishSub?: string }) {
     return (
-      <div className="px-3 mb-0.5" style={{ height: 28, display: "flex", alignItems: "flex-end",
+      <div className="px-3 mb-0.5" style={{ height: 28, display: "flex", alignItems: "center",
           opacity: collapsed ? 0 : 0.7, transition: `opacity ${DUR} ${EASE}`,
           pointerEvents: collapsed ? "none" : "auto" }}>
         <span className="text-[10.5px] font-bold uppercase tracking-[0.08em]"
@@ -150,7 +189,7 @@ export function Sidebar({
     pageKey?: PageKey; badge?: string;
     onClick?: () => void; forceActive?: boolean;
   }) {
-    const isActive = forceActive ?? (!searchHistoryOpen && !!pageKey && active === pageKey);
+    const isActive = forceActive ?? (!!pageKey && active === pageKey);
     const isLocked = !!pageKey && LOCKED_PAGES.has(pageKey);
 
     return (
@@ -202,13 +241,7 @@ export function Sidebar({
     );
   }
 
-  const pinnedItems   = conversations.filter(c =>  c.pinned);
-  const unpinnedItems = conversations.filter(c => !c.pinned);
-  const maxRecent     = 8;
-  const visiblePinned   = showAllRecent ? pinnedItems   : pinnedItems.slice(0, 2);
-  const remainingSlots  = Math.max(0, maxRecent - visiblePinned.length);
-  const visibleUnpinned = showAllRecent ? unpinnedItems : unpinnedItems.slice(0, remainingSlots);
-  const hiddenCount     = Math.max(0, pinnedItems.length + unpinnedItems.length - visiblePinned.length - visibleUnpinned.length);
+  const generalConversations = conversations.filter(c => c.project_id == null);
 
   return (
     <TooltipProvider>
@@ -288,7 +321,33 @@ export function Sidebar({
               </SidebarTip>
             </div>
 
-            <NavBtn icon={Search} label="搜索历史" onClick={onSearchHistory} forceActive={searchHistoryOpen} />
+            {/* History button */}
+            <div style={{ padding: "0 8px 4px", display: "flex" }}>
+              <SidebarTip label="历史记录" show={collapsed}>
+                <button
+                  onClick={onOpenHistory}
+                  className="flex items-center gap-2.5 rounded-xl transition-all"
+                  style={{
+                    width: collapsed ? 40 : "100%",
+                    height: 36,
+                    paddingLeft: 12,
+                    paddingRight: collapsed ? 12 : 10,
+                    justifyContent: collapsed ? "center" : "flex-start",
+                    background: "transparent",
+                    cursor: "pointer",
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = "var(--hover, rgba(0,0,0,0.04))"}
+                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                >
+                  <Clock style={{ width: 16, height: 16, flexShrink: 0, color: "var(--ink-500)" }} />
+                  {!collapsed && (
+                    <span style={{ fontSize: 13.5, fontWeight: 500, color: "var(--ink-700)" }}>
+                      历史记录
+                    </span>
+                  )}
+                </button>
+              </SidebarTip>
+            </div>
 
             {/* Divider */}
             <div style={{ margin: "6px 12px", height: 1, background: "var(--border)", flexShrink: 0 }} />
@@ -309,70 +368,264 @@ export function Sidebar({
             {/* Divider */}
             <div style={{ margin: "6px 12px", height: 1, background: "var(--border)", flexShrink: 0 }} />
 
-            {/* Recent conversations */}
+            {/* Project + Conversation list */}
             <div className="flex flex-col flex-1 min-h-0">
-              <div style={{ height: 26, paddingLeft: 12, display: "flex", alignItems: "flex-end",
-                            marginBottom: 2,
-                            opacity: collapsed ? 0 : 0.7, transition: `opacity ${DUR} ${EASE}`,
-                            pointerEvents: collapsed ? "none" : "auto" }}>
-                <MessageSquare style={{ width: 10.5, height: 10.5, color: "var(--ink-400)", marginRight: 5, flexShrink: 0 }} />
-                <span className="text-[10.5px] font-bold uppercase tracking-[0.08em]"
-                  style={{ color: "var(--ink-400)" }}>最近对话</span>
-              </div>
+              <ScrollArea className="h-full px-2">
+                <div style={{ paddingBottom: 80 }}>
+                  {/* 项目区域 */}
+                  {projects.length > 0 && (
+                    <>
+                      {/* Section header with expand/collapse toggle */}
+                      <div
+                        className="flex items-center justify-between px-3 mb-0.5 cursor-pointer"
+                        style={{ height: 28, opacity: collapsed ? 0 : 0.7, transition: `opacity ${DUR} ${EASE}`, pointerEvents: collapsed ? "none" : "auto" }}
+                        onClick={() => setProjectsSectionExpanded(v => !v)}
+                      >
+                        <span className="text-[10.5px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--ink-400)" }}>项目</span>
+                        <ChevronRight
+                          size={12}
+                          style={{
+                            color: "var(--ink-400)",
+                            transform: projectsSectionExpanded ? "rotate(90deg)" : "rotate(0deg)",
+                            transition: "transform 0.2s",
+                          }}
+                        />
+                      </div>
+                      {projectsSectionExpanded && (
+                        <>
+                          {[...projects]
+                            .sort((a, b) => {
+                              const aPinned = pinnedProjectIds.has(a.id) ? 1 : 0;
+                              const bPinned = pinnedProjectIds.has(b.id) ? 1 : 0;
+                              return bPinned - aPinned;
+                            })
+                            .map((project) => {
+                              const projectConvs = conversations
+                                .filter((c) => c.project_id === project.id)
+                                .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+                              const isExpanded = expandedProjectIds.has(project.id);
+                              const hasConvs = projectConvs.length > 0;
+                              const isHovered = hoveredProjectId === project.id;
+                              const isMenuOpen = activeProjectMenuId === project.id;
+                              const isEditing = editingProjectId === project.id;
 
-              <div ref={recentScrollRef} className="flex-1 min-h-0">
-                <ScrollArea className="h-full px-2">
-                  <div style={{ paddingBottom: 80 }}>
-                    {visiblePinned.length > 0 && (
-                      <>
-                        <div style={{ paddingLeft: 12, paddingBottom: 2, paddingTop: 2,
-                                      opacity: collapsed ? 0 : 0.6, transition: `opacity ${DUR} ${EASE}`,
-                                      pointerEvents: collapsed ? "none" : "auto" }}>
-                          <span className="text-[10px] font-bold uppercase tracking-wide"
-                            style={{ color: "var(--ink-400)" }}>置顶</span>
-                        </div>
-                        {visiblePinned.map(c => (
-                          <ConversationItem key={c.id} item={c} collapsed={collapsed}
-                            hovered={hoveredId === c.id} onHover={setHoveredId}
-                            onSelect={onSelectConversation}
-                            onPin={onPinConversation} onDelete={onDeleteConversation} />
-                        ))}
-                        <div style={{ margin: "4px 8px", height: 1, background: "var(--border)" }} />
-                      </>
-                    )}
-                    {visibleUnpinned.map(c => (
-                      <ConversationItem key={c.id} item={c} collapsed={collapsed}
-                        hovered={hoveredId === c.id} onHover={setHoveredId}
-                        onSelect={onSelectConversation}
-                        onPin={onPinConversation} onDelete={onDeleteConversation} />
-                    ))}
-                    {!showAllRecent && hiddenCount > 0 && (
-                      <button
-                        onClick={() => setShowAllRecent(true)}
-                        className="w-full h-8 rounded-xl flex items-center px-3 text-[12px] transition-colors"
-                        style={{ color: "var(--ink-500)", opacity: collapsed ? 0 : 1,
-                                 pointerEvents: collapsed ? "none" : "auto" }}
-                        onMouseEnter={e => e.currentTarget.style.background = "var(--hover)"}
-                        onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-                      >
-                        查看更多 {hiddenCount} 条…
-                      </button>
-                    )}
-                    {showAllRecent && conversations.length > maxRecent && (
-                      <button
-                        onClick={() => setShowAllRecent(false)}
-                        className="w-full h-8 rounded-xl flex items-center px-3 text-[12px] transition-colors"
-                        style={{ color: "var(--ink-500)", opacity: collapsed ? 0 : 1,
-                                 pointerEvents: collapsed ? "none" : "auto" }}
-                        onMouseEnter={e => e.currentTarget.style.background = "var(--hover)"}
-                        onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-                      >
-                        收起
-                      </button>
-                    )}
-                  </div>
-                </ScrollArea>
-              </div>
+                              return (
+                                <div key={project.id} style={{ position: "relative" }}>
+                                  {/* Project row */}
+                                  <div
+                                    ref={(el) => { if (el) projectRowRefs.current.set(project.id, el); else projectRowRefs.current.delete(project.id); }}
+                                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-pointer transition-colors relative"
+                                    style={{ opacity: collapsed ? 0 : 1, transition: `opacity ${DUR} ${EASE}`, pointerEvents: collapsed ? "none" : "auto" }}
+                                    onClick={() => hasConvs && toggleProject(project.id)}
+                                    onMouseEnter={(e) => {
+                                      e.currentTarget.style.background = "var(--hover, rgba(0,0,0,0.04))";
+                                      setHoveredProjectId(project.id);
+                                    }}
+                                    onMouseLeave={(e) => {
+                                      e.currentTarget.style.background = "transparent";
+                                      setHoveredProjectId(null);
+                                    }}
+                                  >
+                                    <FolderOpen size={14} style={{ color: "var(--ink-500)", flexShrink: 0 }} />
+                                    {isEditing ? (
+                                      <input
+                                        autoFocus
+                                        value={editingProjectName}
+                                        onChange={(e) => setEditingProjectName(e.target.value)}
+                                        onKeyDown={async (e) => {
+                                          if (e.key === "Enter") {
+                                            if (editingProjectName.trim()) {
+                                              try {
+                                                await api.updateProject(project.id, { name: editingProjectName.trim() });
+                                                setProjects(prev => prev.map(p => p.id === project.id ? { ...p, name: editingProjectName.trim() } : p));
+                                              } catch {}
+                                            }
+                                            setEditingProjectId(null);
+                                          } else if (e.key === "Escape") {
+                                            setEditingProjectId(null);
+                                          }
+                                        }}
+                                        onBlur={() => setEditingProjectId(null)}
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="flex-1 text-[13px] font-medium truncate rounded px-1.5 py-0.5"
+                                        style={{ color: "var(--ink-800)", background: "var(--bg-elevated)", border: "1px solid var(--border)", outline: "none" }}
+                                      />
+                                    ) : (
+                                      <span className="text-[13px] font-medium truncate" style={{ color: "var(--ink-800)", flex: 1 }}>
+                                        {project.name}
+                                      </span>
+                                    )}
+                                    {/* Expand/collapse chevron — fixed position */}
+                                    {hasConvs && (
+                                      <ChevronRight
+                                        size={12}
+                                        style={{
+                                          color: "var(--ink-400)",
+                                          flexShrink: 0,
+                                          transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)",
+                                          transition: "transform 0.2s",
+                                        }}
+                                      />
+                                    )}
+                                    {/* Hover action buttons — absolute so chevron stays aligned */}
+                                    {!isEditing && (
+                                      <div
+                                        className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-0.5 rounded-md"
+                                        style={{
+                                          opacity: isHovered ? 1 : 0,
+                                          transition: "opacity 0.15s",
+                                          pointerEvents: isHovered ? "auto" : "none",
+                                          background: "var(--bg-sidebar, var(--bg-panel))",
+                                          padding: "0 2px",
+                                        }}
+                                      >
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setActiveProjectMenuId(isMenuOpen ? null : project.id);
+                                          }}
+                                          className="w-6 h-6 rounded-lg flex items-center justify-center transition-colors"
+                                          style={{ background: "transparent", border: "none" }}
+                                          title="更多"
+                                        >
+                                          <MoreHorizontal size={13} style={{ color: "var(--ink-500)" }} />
+                                        </button>
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setEditingProjectId(project.id);
+                                            setEditingProjectName(project.name);
+                                          }}
+                                          className="w-6 h-6 rounded-lg flex items-center justify-center transition-colors"
+                                          style={{ background: "transparent", border: "none" }}
+                                          title="重命名"
+                                        >
+                                          <Pencil size={11} style={{ color: "var(--ink-500)" }} />
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                  {/* Dropdown menu */}
+                                  {isMenuOpen && (
+                                    <div
+                                      ref={projectMenuRef}
+                                      className="absolute right-2 z-40 rounded-lg overflow-hidden"
+                                      style={{
+                                        top: 32,
+                                        minWidth: 140,
+                                        background: "var(--bg-elevated, #fff)",
+                                        border: "1px solid var(--border)",
+                                        boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
+                                      }}
+                                    >
+                                      <div className="py-1">
+                                        <button
+                                          onClick={() => {
+                                            setPinnedProjectIds(prev => {
+                                              const next = new Set(prev);
+                                              if (next.has(project.id)) next.delete(project.id);
+                                              else next.add(project.id);
+                                              return next;
+                                            });
+                                            setActiveProjectMenuId(null);
+                                          }}
+                                          className="w-full px-3 py-1.5 text-left transition hover:bg-[var(--hover)] flex items-center gap-2"
+                                          style={{ fontSize: "12.5px", color: "var(--ink-700)" }}
+                                        >
+                                          <Pin size={12} style={{ color: "var(--ink-500)" }} />
+                                          {pinnedProjectIds.has(project.id) ? "取消置顶" : "置顶项目"}
+                                        </button>
+                                        <button
+                                          onClick={() => {
+                                            onOpenProjectDB?.(project.id);
+                                            setActiveProjectMenuId(null);
+                                          }}
+                                          className="w-full px-3 py-1.5 text-left transition hover:bg-[var(--hover)] flex items-center gap-2"
+                                          style={{ fontSize: "12.5px", color: "var(--ink-700)" }}
+                                        >
+                                          <Database size={12} style={{ color: "var(--ink-500)" }} />
+                                          项目数据库
+                                        </button>
+                                        <button
+                                          onClick={() => {
+                                            onOpenProjectGraph?.(project.id);
+                                            setActiveProjectMenuId(null);
+                                          }}
+                                          className="w-full px-3 py-1.5 text-left transition hover:bg-[var(--hover)] flex items-center gap-2"
+                                          style={{ fontSize: "12.5px", color: "var(--ink-700)" }}
+                                        >
+                                          <GitGraph size={12} style={{ color: "var(--ink-500)" }} />
+                                          数据图谱
+                                        </button>
+                                        <button
+                                          onClick={() => {
+                                            setEditingProjectId(project.id);
+                                            setEditingProjectName(project.name);
+                                            setActiveProjectMenuId(null);
+                                          }}
+                                          className="w-full px-3 py-1.5 text-left transition hover:bg-[var(--hover)] flex items-center gap-2"
+                                          style={{ fontSize: "12.5px", color: "var(--ink-700)" }}
+                                        >
+                                          <Pencil size={12} style={{ color: "var(--ink-500)" }} />
+                                          重命名项目
+                                        </button>
+                                        <div className="h-px mx-2 my-1" style={{ background: "var(--border)" }} />
+                                        <button
+                                          onClick={() => {
+                                            setActiveProjectMenuId(null);
+                                            setConfirmDelete({ open: true, project });
+                                          }}
+                                          className="w-full px-3 py-1.5 text-left transition hover:bg-[var(--hover)] flex items-center gap-2"
+                                          style={{ fontSize: "12.5px", color: "#ef4444" }}
+                                        >
+                                          <Trash2 size={12} style={{ color: "#ef4444" }} />
+                                          移除
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {/* Conversations under project */}
+                                  {isExpanded && projectConvs.map((c) => (
+                                    <div key={c.id} style={{ paddingLeft: 20 }}>
+                                      <ConversationItem
+                                        item={c}
+                                        collapsed={collapsed}
+                                        hovered={hoveredId === c.id}
+                                        onHover={setHoveredId}
+                                        onSelect={onSelectConversation}
+                                        onPin={onPinConversation}
+                                        onDelete={onDeleteConversation}
+                                      />
+                                    </div>
+                                  ))}
+                                </div>
+                              );
+                            })}
+                        </>
+                      )}
+                    </>
+                  )}
+
+                  {/* 对话区域（无项目） */}
+                  {generalConversations.length > 0 && (
+                    <>
+                      <SectionLabel>对话</SectionLabel>
+                      {generalConversations.map((c) => (
+                        <ConversationItem
+                          key={c.id}
+                          item={c}
+                          collapsed={collapsed}
+                          hovered={hoveredId === c.id}
+                          onHover={setHoveredId}
+                          onSelect={onSelectConversation}
+                          onPin={onPinConversation}
+                          onDelete={onDeleteConversation}
+                        />
+                      ))}
+                    </>
+                  )}
+                </div>
+              </ScrollArea>
             </div>
 
             {/* ── User footer ── */}
@@ -450,6 +703,69 @@ export function Sidebar({
           </div>
         </div>
       </aside>
+
+      {/* Project delete confirm popup */}
+      {confirmDelete.open && confirmDelete.project && (
+        <div
+          className="fixed inset-0 z-[100] flex items-start justify-center"
+          style={{ background: "rgba(0,0,0,0.25)", paddingTop: 160 }}
+          onClick={() => setConfirmDelete({ open: false, project: null })}
+        >
+          <div
+            className="rounded-2xl p-6 w-[320px]"
+            style={{
+              background: "var(--bg-elevated, #fff)",
+              border: "1px solid var(--border)",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.15)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <div
+                className="h-9 w-9 rounded-full flex items-center justify-center flex-shrink-0"
+                style={{ background: "rgba(239,68,68,0.1)" }}
+              >
+                <Trash2 size={16} style={{ color: "#ef4444" }} />
+              </div>
+              <div>
+                <p style={{ fontSize: 14.5, fontWeight: 600, color: "var(--ink-900)" }}>
+                  确认移除项目
+                </p>
+                <p style={{ fontSize: 12.5, color: "var(--ink-500)", marginTop: 2 }}>
+                  项目「{confirmDelete.project.name}」将被删除，此操作不可恢复。
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setConfirmDelete({ open: false, project: null })}
+                className="h-8 px-3 rounded-lg text-[13px] font-medium transition-colors"
+                style={{ color: "var(--ink-600)", background: "var(--bg-subtle)" }}
+              >
+                取消
+              </button>
+              <button
+                onClick={async () => {
+                  const project = confirmDelete.project;
+                  if (!project) return;
+                  setConfirmDelete({ open: false, project: null });
+                  try {
+                    await api.deleteProject(project.id);
+                    setProjects((prev) => prev.filter((p) => p.id !== project.id));
+                    if (currentProjectId === project.id) {
+                      onSelectProject?.(null);
+                    }
+                  } catch {}
+                }}
+                className="h-8 px-3 rounded-lg text-[13px] font-medium transition-colors"
+                style={{ color: "#fff", background: "#ef4444" }}
+              >
+                确认移除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </TooltipProvider>
   );
 }
@@ -466,13 +782,8 @@ function ConversationItem({
   onDelete?: (id: string) => void;
   collapsed?: boolean;
 }) {
-  const groupColor: Record<string, string> = {
-    "今天": "#2563eb", "昨天": "#7c3aed", "7 天内": "#059669", "更早": "#94a3b8",
-  };
-  const dot = groupColor[item.group] || "#94a3b8";
-
   return (
-    <div className="relative px-1"
+    <div className="relative"
       onMouseEnter={() => onHover(item.id)}
       onMouseLeave={() => onHover(null)}>
       <div
@@ -488,10 +799,10 @@ function ConversationItem({
         className="w-full text-left rounded-xl transition-colors"
         style={{
           display: "grid",
-          gridTemplateColumns: "6px minmax(0, 1fr) 58px",
+          gridTemplateColumns: "minmax(0, 1fr) 58px",
           alignItems: "center",
           columnGap: 8,
-          padding: "9px 10px",
+          padding: "6px 10px",
           background: hovered ? "var(--hover, rgba(0,0,0,0.04))" : "transparent",
           opacity: collapsed ? 0 : 1,
           transition: `opacity 0.24s ease, background 0.12s ease`,
@@ -499,12 +810,7 @@ function ConversationItem({
           cursor: "pointer",
         }}
       >
-        <span className="mt-[1px] w-1.5 h-1.5 rounded-full" style={{ background: dot }} />
-        <div
-          style={{
-            minWidth: 0,
-          }}
-        >
+        <div style={{ minWidth: 0 }}>
           <div className="text-[13px] font-medium truncate"
             style={{ color: "var(--ink-800)", lineHeight: 1.4, whiteSpace: "nowrap" }}>
             {item.title || "无标题对话"}
@@ -523,20 +829,20 @@ function ConversationItem({
             <>
               {onPin && (
                 <button
-	                  onClick={e => { e.stopPropagation(); onPin(item.id); }}
-	                  className="w-6 h-6 rounded-lg flex items-center justify-center transition-colors"
-	                  style={{ background: "transparent", border: "none" }}
-	                  title={item.pinned ? "取消置顶" : "置顶"}
-	                >
+                  onClick={e => { e.stopPropagation(); onPin(item.id); }}
+                  className="w-6 h-6 rounded-lg flex items-center justify-center transition-colors"
+                  style={{ background: "transparent", border: "none" }}
+                  title={item.pinned ? "取消置顶" : "置顶"}
+                >
                   <Pin style={{ width: 11, height: 11, color: item.pinned ? "var(--brand)" : "var(--ink-500)" }} />
                 </button>
               )}
               {onDelete && (
                 <button
-	                  onClick={e => { e.stopPropagation(); onDelete(item.id); }}
-	                  className="w-6 h-6 rounded-lg flex items-center justify-center transition-colors"
-	                  style={{ background: "transparent", border: "none" }}
-	                  title="删除"
+                  onClick={e => { e.stopPropagation(); onDelete(item.id); }}
+                  className="w-6 h-6 rounded-lg flex items-center justify-center transition-colors"
+                  style={{ background: "transparent", border: "none" }}
+                  title="删除"
                 >
                   <Trash2 style={{ width: 11, height: 11, color: "#ef4444" }} />
                 </button>

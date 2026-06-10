@@ -1,534 +1,920 @@
 /**
- * KnowledgeBasePage — 三合一知识库中心 (世界观10层架构版)
+ * KnowledgeBasePage — 数据库中心 v3
  *
- * 标签页:
- *   1) 数据图谱    — 10层世界观架构可视化 + 领域覆盖
- *   2) 系统数据库  — 按10层分组的官方数据源卡片
- *   3) 用户数据库  — 用户自建知识库 (上传/管理)
+ * 变更：
+ * - SystemKBTab 使用新公开接口 /api/kb/system，展示真实 28K+ 文档数据
+ * - ProjectKBTab 支持直接新建项目，不再提示去主界面
+ * - 页面内容居中（max-w 1160px，mx-auto）
+ * - 结构化数据 vs 知识文档 双通道上传
  */
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Database, Plus, Upload, FileText, Trash2, Loader2, X,
-  CheckCircle2, AlertCircle, Layers, FileStack, HardDrive,
-  Globe, Server, FolderOpen, Search, BarChart3, ChevronRight,
-  TrendingUp, Shield, Brain, Workflow, Clock, Eye, Zap, BookOpen,
-  Cpu, Microscope, Anchor, Radio, Activity, Target, Compass,
+  CheckCircle2, AlertCircle, Search, RefreshCw,
+  Network, GitBranch, CircleDot,
+  Globe, ChevronDown, HardDrive,
+  FolderOpen, BookOpen, Zap, BarChart3,
+  Table2, Brain, Sheet,
 } from "lucide-react";
-import { api, KnowledgeBase, KBDocument, OfficialDataSource } from "../lib/api";
+import { api, KnowledgeBase, KBDocument, OfficialDataSource, Project, UploadedFileRecord } from "../lib/api";
+import OntologyEditor from "./OntologyEditor";
 
-type TabKey = "graph" | "system" | "user";
+type TabKey = "system" | "project" | "ontology";
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// 10层世界观架构配置
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── helpers ──────────────────────────────────────────────────────────────────
 
-export interface WorldviewLayer {
-  id: string;
-  name: string;
-  nameEn: string;
-  budgetGb: number;
-  color: string;
-  bgColor: string;
-  borderColor: string;
-  icon: React.ElementType;
-  description: string;
-  sourceCount: number;
+async function safeCall<T>(promise: Promise<T>, fallback: T, timeoutMs = 8000): Promise<T> {
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, rej) => setTimeout(() => rej(new Error("timeout")), timeoutMs)),
+    ]);
+  } catch {
+    return fallback;
+  }
 }
 
-const WORLDVIEW_LAYERS: WorldviewLayer[] = [
-  {
-    id: "L0", name: "元知识层", nameEn: "Meta-Knowledge",
-    budgetGb: 50, color: "#8b5cf6", bgColor: "#f5f3ff", borderColor: "#c4b5fd",
-    icon: Anchor, description: "本体定义、Schema、概念体系、版本控制",
-    sourceCount: 5,
-  },
-  {
-    id: "L1", name: "基础事实层", nameEn: "Ground Facts",
-    budgetGb: 800, color: "#3b82f6", bgColor: "#eff6ff", borderColor: "#93c5fd",
-    icon: BookOpen, description: "原始事实、观测数据、统计数据、年报财报",
-    sourceCount: 11,
-  },
-  {
-    id: "L2", name: "关系网络层", nameEn: "Relation Networks",
-    budgetGb: 600, color: "#06b6d4", bgColor: "#ecfeff", borderColor: "#67e8f9",
-    icon: Globe, description: "实体关系、知识图谱、社交网络、供应链",
-    sourceCount: 6,
-  },
-  {
-    id: "L3", name: "因果机制层", nameEn: "Causal & Mechanistic",
-    budgetGb: 400, color: "#10b981", bgColor: "#ecfdf5", borderColor: "#6ee7b7",
-    icon: Workflow, description: "因果关系、物理机制、经济模型、推理链",
-    sourceCount: 6,
-  },
-  {
-    id: "L4", name: "价值规范层", nameEn: "Normative",
-    budgetGb: 100, color: "#84cc16", bgColor: "#f7fee7", borderColor: "#bef264",
-    icon: Shield, description: "法律法规、伦理准则、行业标准、政策导向",
-    sourceCount: 6,
-  },
-  {
-    id: "L5", name: "认知思维层", nameEn: "Cognitive",
-    budgetGb: 150, color: "#f59e0b", bgColor: "#fffbeb", borderColor: "#fcd34d",
-    icon: Brain, description: "认知框架、思维模型、决策理论、心理学",
-    sourceCount: 6,
-  },
-  {
-    id: "L6", name: "程序实用层", nameEn: "Procedural",
-    budgetGb: 300, color: "#f97316", bgColor: "#fff7ed", borderColor: "#fdba74",
-    icon: Cpu, description: "算法代码、工程实践、操作手册、最佳实践",
-    sourceCount: 6,
-  },
-  {
-    id: "L7", name: "多模态对齐层", nameEn: "Multimodal",
-    budgetGb: 800, color: "#ef4444", bgColor: "#fef2f2", borderColor: "#fca5a5",
-    icon: Eye, description: "图像、音频、视频、跨模态语义对齐",
-    sourceCount: 4,
-  },
-  {
-    id: "L8", name: "时序演化层", nameEn: "Temporal",
-    budgetGb: 200, color: "#ec4899", bgColor: "#fdf2f8", borderColor: "#f9a8d4",
-    icon: Clock, description: "历史演变、趋势预测、版本追踪、时间序列",
-    sourceCount: 5,
-  },
-  {
-    id: "L9", name: "不确定性层", nameEn: "Uncertainty",
-    budgetGb: 100, color: "#6b7280", bgColor: "#f9fafb", borderColor: "#d1d5db",
-    icon: Microscope, description: "误差范围、置信区间、边界条件、反面证据",
-    sourceCount: 5,
-  },
-];
+function fmt(n: number | undefined | null): string {
+  if (!n) return "0";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+function fmtSize(bytes: number | undefined | null): string {
+  if (!bytes) return "—";
+  if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
+  if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`;
+  if (bytes >= 1_024) return `${(bytes / 1_024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+function isStructured(n: string) { return /\.(csv|xlsx|xls|parquet|tsv|ods)$/i.test(n); }
 
-const TOTAL_BUDGET_GB = WORLDVIEW_LAYERS.reduce((s, l) => s + l.budgetGb, 0);
-
-// 模拟各层已下载量（后续接入后端API）
-function getLayerActualGb(layerId: string): number {
-  const actuals: Record<string, number> = {
-    L0: 2.1, L1: 45.2, L2: 18.5, L3: 12.3, L4: 8.7,
-    L5: 5.4, L6: 35.8, L7: 2.1, L8: 6.2, L9: 1.8,
-  };
-  return actuals[layerId] || 0;
+const CAT_COLORS: Record<string, { bg: string; text: string }> = {
+  "金融数据":  { bg: "#fef9c3", text: "#854d0e" },
+  "行政政务":  { bg: "#dbeafe", text: "#1e40af" },
+  "学术研究":  { bg: "#f3e8ff", text: "#6b21a8" },
+  "法律法规":  { bg: "#fce7f3", text: "#9d174d" },
+  "产业数据":  { bg: "#d1fae5", text: "#065f46" },
+  "企业信息":  { bg: "#e0f2fe", text: "#0369a1" },
+  "新闻舆情":  { bg: "#fef3c7", text: "#92400e" },
+  "健康医疗":  { bg: "#dcfce7", text: "#15803d" },
+  "科技创新":  { bg: "#ede9fe", text: "#5b21b6" },
+};
+function CatBadge({ category }: { category: string }) {
+  const c = CAT_COLORS[category] || { bg: "var(--bg-subtle)", text: "var(--ink-600)" };
+  return (
+    <span style={{ display:"inline-flex", alignItems:"center", height:18, padding:"0 7px", borderRadius:99,
+      background:c.bg, color:c.text, fontSize:10.5, fontWeight:650, whiteSpace:"nowrap" }}>
+      {category}
+    </span>
+  );
 }
 
-// ── 领域分类（与后端 type_labels 对齐）───────────────────────────────────────
-const KB_TYPES: { value: string; label: string; icon: string }[] = [
-  { value: "finance", label: "金融数据", icon: "💹" },
-  { value: "banking", label: "银行年报", icon: "🏦" },
-  { value: "policy", label: "政策法规", icon: "📜" },
-  { value: "gov", label: "政府报告", icon: "🏛️" },
-  { value: "news", label: "新闻舆情", icon: "📰" },
-  { value: "academic", label: "学术论文", icon: "🎓" },
-  { value: "code", label: "代码工程", icon: "💻" },
-  { value: "math", label: "数学知识", icon: "➗" },
-  { value: "statistics", label: "统计数据", icon: "📊" },
-  { value: "research", label: "研究报告", icon: "🔬" },
-  { value: "general", label: "通用", icon: "📁" },
-];
+const KB_TYPE_LABELS: Record<string, string> = {
+  general:"通用", policy:"政策法规", research:"研究报告",
+  finance:"金融数据", tech:"技术文档", news:"新闻舆情",
+  academic:"学术论文", code:"代码工程", math:"数学知识",
+  statistics:"统计数据", law:"法律法规", trade:"贸易数据",
+  gov:"政府报告", banking:"银行年报",
+};
+const KB_TYPE_COLORS: Record<string, string> = {
+  academic:"#6366f1", code:"#0ea5e9", statistics:"#10b981",
+  policy:"#f59e0b", law:"#8b5cf6", finance:"#ec4899",
+  news:"#f97316", math:"#14b8a6", trade:"#64748b",
+};
 
-function typeIcon(t?: string) {
-  return KB_TYPES.find((k) => k.value === t)?.icon ?? "📁";
-}
+// ─── Main ──────────────────────────────────────────────────────────────────────
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// 资产总览横幅
-// ═══════════════════════════════════════════════════════════════════════════════
+export default function KnowledgeBasePage({
+  initialTab, initialProjectSubTab, initialProjectId,
+}: { initialTab?: TabKey; initialProjectSubTab?: "tables" | "graph"; initialProjectId?: number; }) {
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab ?? "project");
 
-function WorldviewOverviewBanner() {
-  const totalActual = WORLDVIEW_LAYERS.reduce((s, l) => s + getLayerActualGb(l.id), 0);
-  const totalPct = Math.min((totalActual / TOTAL_BUDGET_GB) * 100, 100);
-  const totalSources = WORLDVIEW_LAYERS.reduce((s, l) => s + l.sourceCount, 0);
+  const TABS = [
+    { key: "system" as TabKey,   label: "系统知识库", icon: Globe },
+    { key: "project" as TabKey,  label: "项目数据库", icon: FolderOpen },
+    { key: "ontology" as TabKey, label: "本体建模",   icon: Network },
+  ];
 
   return (
-    <div className="px-6 py-4 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center backdrop-blur">
-            <Compass size={20} className="text-emerald-400" />
-          </div>
-          <div>
-            <h2 className="text-[15px] font-bold text-white">世界观知识库 · Worldview Knowledge Base</h2>
-            <p className="text-[12px] text-slate-400">10层架构 · 60个数据源 · 3.5TB存储预算</p>
-          </div>
+    <div className="min-h-full w-full flex flex-col items-center px-6 py-6 pb-20">
+      <style>{`
+        @keyframes kb-in { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+        .kb-in { animation: kb-in .35s cubic-bezier(.22,1,.36,1) both; }
+        .kb-row:hover { background: var(--hover) !important; }
+        .kb-card:hover { border-color:rgba(91,78,232,.3)!important; box-shadow:0 2px 8px rgba(91,78,232,.06)!important; }
+        .drop-zone-active { border-color:var(--brand)!important; background:rgba(91,78,232,.04)!important; }
+      `}</style>
+
+      <div className="w-full" style={{ maxWidth: 1160 }}>
+        <div className="mb-6 kb-in">
+          <h1 style={{ fontSize:22, fontWeight:720, letterSpacing:"-.02em", color:"var(--ink-900)" }}>数据库</h1>
+          <p style={{ fontSize:13, color:"var(--ink-400)", marginTop:4 }}>系统知识库 · 项目数据库 · 本体建模</p>
         </div>
-        <div className="flex items-center gap-6">
-          <div className="text-right">
-            <p className="text-[11px] text-slate-400">已下载</p>
-            <p className="text-[18px] font-bold text-emerald-400">{totalActual.toFixed(1)} <span className="text-[12px] font-normal text-slate-500">GB</span></p>
-          </div>
-          <div className="text-right">
-            <p className="text-[11px] text-slate-400">总预算</p>
-            <p className="text-[18px] font-bold text-white">{TOTAL_BUDGET_GB} <span className="text-[12px] font-normal text-slate-500">GB</span></p>
-          </div>
-          <div className="text-right">
-            <p className="text-[11px] text-slate-400">覆盖率</p>
-            <p className="text-[18px] font-bold text-amber-400">{totalPct.toFixed(1)}%</p>
-          </div>
-          <div className="text-right">
-            <p className="text-[11px] text-slate-400">数据源</p>
-            <p className="text-[18px] font-bold text-blue-400">{totalSources} <span className="text-[12px] font-normal text-slate-500">个</span></p>
-          </div>
+
+        <div className="flex items-center gap-1 mb-6 kb-in"
+          style={{ background:"var(--bg-elevated)", border:"1px solid var(--border)", borderRadius:12, padding:4, width:"fit-content" }}>
+          {TABS.map(({ key, label, icon: Icon }) => {
+            const active = activeTab === key;
+            return (
+              <button key={key} onClick={() => setActiveTab(key)}
+                className="flex items-center gap-1.5 transition-all"
+                style={{ height:32, padding:"0 14px", borderRadius:9, fontSize:13,
+                  fontWeight: active ? 650 : 500,
+                  background: active ? "var(--ink-900)" : "transparent",
+                  color: active ? "#fff" : "var(--ink-500)" }}>
+                <Icon size={14} />{label}
+              </button>
+            );
+          })}
         </div>
-      </div>
-      {/* 总体进度条 */}
-      <div className="flex items-center gap-2">
-        <div className="flex-1 h-2.5 rounded-full bg-white/10 overflow-hidden">
-          <div
-            className="h-full rounded-full transition-all duration-1000"
-            style={{
-              width: `${totalPct}%`,
-              background: "linear-gradient(90deg, #10b981, #3b82f6, #8b5cf6)",
-            }}
-          />
+
+        <div className="kb-in">
+          {activeTab === "system"   && <SystemKBTab />}
+          {activeTab === "project"  && <ProjectKBTab initialSubTab={initialProjectSubTab} initialProjectId={initialProjectId} />}
+          {activeTab === "ontology" && <OntologyTab />}
         </div>
-        <span className="text-[11px] text-slate-400 w-12 text-right">{totalPct.toFixed(1)}%</span>
-      </div>
-      {/* 各层小进度条 */}
-      <div className="flex items-center gap-1 mt-2">
-        {WORLDVIEW_LAYERS.map((layer) => {
-          const actual = getLayerActualGb(layer.id);
-          const pct = Math.min((actual / layer.budgetGb) * 100, 100);
-          return (
-            <div key={layer.id} className="flex-1 group relative">
-              <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
-                <div
-                  className="h-full rounded-full transition-all"
-                  style={{ width: `${pct}%`, backgroundColor: layer.color }}
-                />
-              </div>
-              {/* Tooltip */}
-              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:block z-10">
-                <div className="bg-slate-800 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap shadow-lg">
-                  {layer.id} {layer.name}: {actual.toFixed(1)}/{layer.budgetGb}GB ({pct.toFixed(0)}%)
-                </div>
-              </div>
-            </div>
-          );
-        })}
       </div>
     </div>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Main Component
+// TAB 1: 系统知识库
+// 使用 /api/kb/system（公开接口）+ /api/v1/official-sources（公开接口）
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export default function KnowledgeBasePage() {
-  const [activeTab, setActiveTab] = useState<TabKey>("graph");
+type SystemKBItem = KnowledgeBase & { type_label: string };
 
-  return (
-    <div className="flex flex-col h-full bg-[#f8f9fb] overflow-hidden">
-      {/* 世界观资产总览横幅 */}
-      <WorldviewOverviewBanner />
+function SystemKBTab() {
+  const [sources, setSources]   = useState<OfficialDataSource[]>([]);
+  const [kbs, setKBs]           = useState<SystemKBItem[]>([]);
+  const [sysStats, setSysStats] = useState<{ total_docs: number; total_size: number } | null>(null);
+  const [loading, setLoading]   = useState(true);
+  const [search, setSearch]     = useState("");
+  const [activeCat, setActiveCat] = useState<string | null>(null);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [activeKbType, setActiveKbType] = useState<string | null>(null);
 
-      {/* Header */}
-      <div className="flex items-center gap-3 px-6 py-3 bg-white border-b border-gray-100">
-        <div className="flex-1">
-          <p className="text-[12px] text-gray-500">数据图谱、系统数据库与用户知识库的统一入口</p>
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex items-center gap-1 px-6 py-2 bg-white border-b border-gray-100">
-        {([
-          { key: "graph" as TabKey, label: "数据图谱", icon: BarChart3 },
-          { key: "system" as TabKey, label: "系统数据库", icon: Server },
-          { key: "user" as TabKey, label: "用户数据库", icon: FolderOpen },
-        ]).map((tab) => {
-          const Icon = tab.icon;
-          const active = activeTab === tab.key;
-          return (
-            <button
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-colors ${
-                active
-                  ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200"
-                  : "text-gray-500 hover:bg-gray-50"
-              }`}
-            >
-              <Icon size={14} />
-              {tab.label}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 overflow-hidden">
-        {activeTab === "graph" && <DataGraphTab />}
-        {activeTab === "system" && <SystemDBTab />}
-        {activeTab === "user" && <UserDBTab />}
-      </div>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TAB 1: 数据图谱 — 10层世界观架构可视化
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function DataGraphTab() {
-  const [selectedLayer, setSelectedLayer] = useState<string | null>(null);
-  const [graphData, setGraphData] = useState<{
-    nodes: Array<{
-      id: string; label: string; type: string; coverage_score: number;
-      color: string; status: string; parent?: string; kb_ids?: string[];
-      actual_kbs?: number; planned_kbs?: number; actual_files?: number;
-    }>;
-    edges: Array<{ source: string; target: string; strength: number }>;
-    summary?: any;
-  } | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    api.getDataGraph()
-      .then((d) => setGraphData(d))
-      .catch(() => setGraphData(null))
-      .finally(() => setLoading(false));
+  const load = useCallback(async () => {
+    setLoading(true);
+    const [srcRes, kbRes] = await Promise.all([
+      safeCall(api.listOfficialSources(), { sources: [], categories: [], by_category: {} }),
+      safeCall(api.listSystemKBs(), { items: [], total: 0, total_docs: 0, total_size: 0, size_display: "—" }),
+    ]);
+    setSources(srcRes.sources || []);
+    setKBs((kbRes.items || []) as SystemKBItem[]);
+    setSysStats({ total_docs: kbRes.total_docs || 0, total_size: kbRes.total_size || 0 });
+    setLoading(false);
   }, []);
 
-  const summary = graphData?.summary || {};
+  useEffect(() => { load(); }, [load]);
+
+  const offlineDocs  = sources.reduce((a, s) => a + (s.offline_doc_count || 0), 0);
+  const activeSrcs   = sources.filter((s) => s.is_active).length;
+  const kbTypes      = Array.from(new Set(kbs.map((k) => k.kb_type).filter(Boolean)));
+  const categories   = Array.from(new Set(sources.map((s) => s.category).filter(Boolean)));
+
+  const filteredSrcs = sources.filter((s) => {
+    const mc = !activeCat  || s.category === activeCat;
+    const ms = !search || s.name.includes(search) || (s.description || "").includes(search);
+    return mc && ms;
+  });
+  const filteredKBs = kbs.filter((k) => !activeKbType || k.kb_type === activeKbType);
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 size={24} className="animate-spin text-gray-300" />
+      <div className="flex items-center justify-center h-40 gap-2">
+        <Loader2 size={18} className="animate-spin" style={{ color:"var(--ink-300)" }} />
+        <span style={{ fontSize:13, color:"var(--ink-400)" }}>加载中…</span>
       </div>
     );
   }
 
   return (
-    <div className="flex h-full overflow-hidden">
-      {/* Left: 10层架构 + 领域覆盖 */}
-      <div className="flex-1 overflow-auto p-6">
-        {/* 10层架构金字塔 */}
-        <div className="mb-6">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-[14px] font-semibold text-gray-900">10层世界观架构</h3>
-            <span className="text-[11px] text-gray-400">点击层查看详情</span>
+    <div>
+      {/* Stats row */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+        {[
+          { label:"数据源",    value:fmt(sources.length),            sub:`${activeSrcs} 已激活`,       icon:Globe,    color:"#6366f1" },
+          { label:"官方数据量", value:fmt(sources.reduce((a,s)=>a+(s.doc_count||0),0)), sub:"各源累计", icon:FileText, color:"#0ea5e9" },
+          { label:"离线预载",  value:fmt(offlineDocs),               sub:"可离线使用",                  icon:HardDrive, color:"#10b981" },
+          { label:"系统 KB",   value:fmt(kbs.length),                sub:`${fmt(sysStats?.total_docs)} 文档`, icon:Database, color:"#f59e0b" },
+          { label:"语料体积",  value:fmtSize(sysStats?.total_size), sub:"已入库文本",                  icon:BarChart3, color:"#8b5cf6" },
+        ].map((s) => (
+          <div key={s.label} className="rounded-xl p-4 kb-card transition-all"
+            style={{ background:"var(--bg-elevated)", border:"1px solid var(--border)" }}>
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <s.icon size={13} style={{ color:s.color }} />
+              <span style={{ fontSize:11, color:"var(--ink-400)", fontWeight:500 }}>{s.label}</span>
+            </div>
+            <div style={{ fontSize:20, fontWeight:720, color:"var(--ink-900)", lineHeight:1.2 }}>{s.value}</div>
+            <div style={{ fontSize:10.5, color:"var(--ink-400)", marginTop:2 }}>{s.sub}</div>
           </div>
-          <div className="space-y-2">
-            {WORLDVIEW_LAYERS.map((layer) => {
-              const actual = getLayerActualGb(layer.id);
-              const pct = Math.min((actual / layer.budgetGb) * 100, 100);
-              const isSelected = selectedLayer === layer.id;
-              const LayerIcon = layer.icon;
+        ))}
+      </div>
 
+      {/* ── Section 1: System KBs ───────────────────────────────── */}
+      {kbs.length > 0 && (
+        <div className="mb-8">
+          <div className="flex items-center gap-2 mb-3">
+            <h3 className="flex items-center gap-2" style={{ fontSize:14, fontWeight:650, color:"var(--ink-700)" }}>
+              <Database size={14} style={{ color:"var(--ink-400)" }} />
+              已入库知识库
+              <span style={{ fontSize:10.5, padding:"1px 7px", borderRadius:99, background:"var(--bg-subtle)", color:"var(--ink-400)", fontWeight:500 }}>
+                {kbs.length}
+              </span>
+            </h3>
+            {/* KB type filter */}
+            <div className="flex flex-wrap gap-1.5 ml-2">
+              {kbTypes.map((t) => (
+                <button key={t} onClick={() => setActiveKbType(activeKbType === t ? null : t)}
+                  style={{ height:22, padding:"0 8px", borderRadius:99, fontSize:11, fontWeight:550,
+                    background: activeKbType === t ? (KB_TYPE_COLORS[t!] || "var(--ink-900)") : "var(--bg-subtle)",
+                    color: activeKbType === t ? "#fff" : "var(--ink-600)",
+                    border: `1px solid ${activeKbType === t ? (KB_TYPE_COLORS[t!] || "var(--ink-900)") : "var(--border)"}`,
+                    transition:"all .15s" }}>
+                  {KB_TYPE_LABELS[t!] || t}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-xl overflow-hidden" style={{ border:"1px solid var(--border)" }}>
+            {/* Header */}
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 100px 80px 90px 70px",
+              background:"var(--bg-subtle)", padding:"7px 16px", borderBottom:"1px solid var(--border)",
+              fontSize:11, fontWeight:650, color:"var(--ink-500)" }}>
+              <span>知识库名称</span><span>类型</span>
+              <span className="text-right">文档数</span><span className="text-right">语料体积</span><span className="text-center">向量状态</span>
+            </div>
+            {filteredKBs.map((kb) => {
+              const typeColor = KB_TYPE_COLORS[kb.kb_type || ""] || "#6b7280";
+              const hasVectors = (kb.doc_count || 0) > 0;
               return (
-                <button
-                  key={layer.id}
-                  onClick={() => setSelectedLayer(isSelected ? null : layer.id)}
-                  className={`w-full text-left rounded-xl border transition-all ${
-                    isSelected
-                      ? "ring-2 shadow-md"
-                      : "hover:shadow-sm"
-                  }`}
-                  style={{
-                    backgroundColor: layer.bgColor,
-                    borderColor: isSelected ? layer.color : layer.borderColor,
-                    ringColor: layer.color,
-                  }}
-                >
-                  <div className="px-4 py-3">
-                    <div className="flex items-center gap-3">
-                      {/* 图标 */}
-                      <div
-                        className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
-                        style={{ backgroundColor: layer.color + "20" }}
-                      >
-                        <LayerIcon size={18} style={{ color: layer.color }} />
-                      </div>
-
-                      {/* 信息 */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[11px] font-bold px-1.5 py-0.5 rounded"
-                            style={{ backgroundColor: layer.color, color: "white" }}>
-                            {layer.id}
-                          </span>
-                          <span className="text-[13px] font-semibold text-gray-900">{layer.name}</span>
-                          <span className="text-[11px] text-gray-400">{layer.nameEn}</span>
-                        </div>
-                        <p className="text-[11px] text-gray-500 mt-0.5 truncate">{layer.description}</p>
-                      </div>
-
-                      {/* 数据指标 */}
-                      <div className="flex items-center gap-4 shrink-0">
-                        <div className="text-right">
-                          <p className="text-[11px] text-gray-400">预算</p>
-                          <p className="text-[13px] font-semibold text-gray-700">{layer.budgetGb}GB</p>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-[11px] text-gray-400">已下载</p>
-                          <p className="text-[13px] font-semibold" style={{ color: layer.color }}>
-                            {actual.toFixed(1)}GB
-                          </p>
-                        </div>
-                        <div className="text-right w-14">
-                          <p className="text-[11px] text-gray-400">覆盖率</p>
-                          <p className="text-[13px] font-bold" style={{ color: pct >= 50 ? "#10b981" : pct >= 20 ? "#f59e0b" : "#ef4444" }}>
-                            {pct.toFixed(0)}%
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* 进度条 */}
-                    <div className="mt-2.5 flex items-center gap-2">
-                      <div className="flex-1 h-2 rounded-full bg-white/60 overflow-hidden">
-                        <div
-                          className="h-full rounded-full transition-all duration-700"
-                          style={{ width: `${pct}%`, backgroundColor: layer.color }}
-                        />
-                      </div>
-                      <span className="text-[10px] text-gray-400 w-10 text-right">{layer.sourceCount} 数据源</span>
-                    </div>
+                <div key={kb.id} className="kb-row" style={{
+                  display:"grid", gridTemplateColumns:"1fr 100px 80px 90px 70px",
+                  padding:"9px 16px", alignItems:"center", borderBottom:"1px solid var(--border)",
+                  background:"var(--bg-elevated)", fontSize:13, transition:"background .12s",
+                }}>
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span className="h-6 w-6 rounded flex items-center justify-center flex-shrink-0 text-[10px] font-bold"
+                      style={{ background:`${typeColor}18`, color:typeColor }}>
+                      {(kb.name || "").slice(0, 1)}
+                    </span>
+                    <p className="truncate font-medium" style={{ color:"var(--ink-900)" }}>{kb.name}</p>
                   </div>
+                  <div>
+                    <span style={{ fontSize:10.5, padding:"2px 6px", borderRadius:99,
+                      background:`${typeColor}12`, color:typeColor, fontWeight:600 }}>
+                      {KB_TYPE_LABELS[kb.kb_type || ""] || kb.kb_type}
+                    </span>
+                  </div>
+                  <span className="text-right" style={{ fontSize:12.5, fontWeight:650, fontVariantNumeric:"tabular-nums",
+                    color: (kb.doc_count || 0) > 0 ? "var(--ink-800)" : "var(--ink-300)" }}>
+                    {fmt(kb.doc_count)}
+                  </span>
+                  <span className="text-right" style={{ fontSize:12, color:"var(--ink-500)", fontVariantNumeric:"tabular-nums" }}>
+                    {fmtSize(kb.total_size)}
+                  </span>
+                  <div className="flex justify-center items-center gap-1">
+                    <span style={{ width:7, height:7, borderRadius:999,
+                      background: hasVectors ? "#10b981" : "#d1d5db", display:"inline-block" }} />
+                    <span style={{ fontSize:10, color: hasVectors ? "#059669" : "var(--ink-300)" }}>
+                      {hasVectors ? "已入库" : "空"}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
-                  {/* 展开详情 */}
-                  {isSelected && <LayerDetailPanel layer={layer} actualGb={actual} />}
+      {/* ── Section 2: Official Data Sources ───────────────────── */}
+      <div>
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <h3 className="flex items-center gap-2" style={{ fontSize:14, fontWeight:650, color:"var(--ink-700)" }}>
+            <Globe size={14} style={{ color:"var(--ink-400)" }} />
+            官方数据源
+            <span style={{ fontSize:10.5, padding:"1px 7px", borderRadius:99, background:"var(--bg-subtle)", color:"var(--ink-400)", fontWeight:500 }}>
+              {sources.length}
+            </span>
+          </h3>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg ml-2"
+            style={{ background:"var(--bg-elevated)", border:"1px solid var(--border)" }}>
+            <Search size={12} style={{ color:"var(--ink-400)" }} />
+            <input value={search} onChange={(e) => setSearch(e.target.value)}
+              placeholder="搜索数据源…" className="bg-transparent text-[12px] outline-none w-36"
+              style={{ color:"var(--ink-700)" }} />
+            {search && <button onClick={() => setSearch("")}><X size={12} style={{ color:"var(--ink-400)" }} /></button>}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {categories.map((cat) => (
+              <button key={cat} onClick={() => setActiveCat(activeCat === cat ? null : cat)}
+                style={{ height:26, padding:"0 9px", borderRadius:8, fontSize:11.5, fontWeight:550,
+                  background: activeCat === cat ? "var(--ink-900)" : "var(--bg-elevated)",
+                  color: activeCat === cat ? "#fff" : "var(--ink-600)",
+                  border:`1px solid ${activeCat === cat ? "var(--ink-900)" : "var(--border)"}`,
+                  transition:"all .15s" }}>
+                {cat}
+              </button>
+            ))}
+          </div>
+          <button onClick={load} className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg"
+            style={{ fontSize:11.5, color:"var(--ink-400)", border:"1px solid var(--border)", background:"var(--bg-elevated)" }}>
+            <RefreshCw size={11} /> 刷新
+          </button>
+        </div>
+
+        {filteredSrcs.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-center rounded-xl"
+            style={{ border:"1.5px dashed var(--border)" }}>
+            <Globe size={28} style={{ color:"var(--ink-200)", marginBottom:10 }} />
+            <p style={{ fontSize:13, color:"var(--ink-400)" }}>暂无官方数据源</p>
+            <p style={{ fontSize:11.5, color:"var(--ink-300)", marginTop:3 }}>通过管理后台导入后显示</p>
+          </div>
+        ) : (
+          <div className="rounded-xl overflow-hidden" style={{ border:"1px solid var(--border)" }}>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 110px 100px 80px 80px 64px 28px",
+              background:"var(--bg-subtle)", padding:"7px 16px", borderBottom:"1px solid var(--border)",
+              fontSize:11, fontWeight:650, color:"var(--ink-500)" }}>
+              <span>数据源</span><span>分类</span><span>覆盖范围</span>
+              <span className="text-right">文档数</span><span className="text-right">离线索引</span>
+              <span className="text-center">状态</span><span />
+            </div>
+            {filteredSrcs.map((src) => {
+              const expanded = expandedKey === src.key;
+              return (
+                <div key={src.key} style={{ borderBottom:"1px solid var(--border)" }}>
+                  <button className="kb-row w-full text-left"
+                    onClick={() => setExpandedKey(expanded ? null : src.key)}
+                    style={{ display:"grid", gridTemplateColumns:"1fr 110px 100px 80px 80px 64px 28px",
+                      padding:"9px 16px", alignItems:"center",
+                      background: expanded ? "rgba(91,78,232,.03)" : "var(--bg-elevated)", fontSize:13 }}>
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className="h-7 w-7 rounded-lg flex items-center justify-center flex-shrink-0 text-[11px] font-bold"
+                        style={{ background:src.icon_bg||"#eef2ff", color:src.icon_color||"#6366f1" }}>
+                        {src.name.slice(0,1)}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="truncate font-medium" style={{ color:"var(--ink-900)" }}>{src.name}</p>
+                        {src.description && <p className="truncate" style={{ color:"var(--ink-400)", fontSize:11, marginTop:1 }}>{src.description}</p>}
+                      </div>
+                    </div>
+                    <div><CatBadge category={src.category} /></div>
+                    <span style={{ fontSize:11.5, color:"var(--ink-500)" }}>{src.coverage||"—"}</span>
+                    <span className="text-right" style={{ fontSize:12.5, fontWeight:600, color:"var(--ink-700)", fontVariantNumeric:"tabular-nums" }}>
+                      {fmt(src.doc_count)}
+                    </span>
+                    <span className="text-right" style={{ fontSize:12, fontVariantNumeric:"tabular-nums",
+                      fontWeight: src.offline_available ? 650 : 400,
+                      color: src.offline_available ? "#059669" : "var(--ink-300)" }}>
+                      {src.offline_available ? fmt(src.offline_doc_count) : "—"}
+                    </span>
+                    <div className="flex justify-center">
+                      <span style={{ width:7, height:7, borderRadius:999, background:src.is_active?"#10b981":"#d1d5db", display:"inline-block" }} />
+                    </div>
+                    <ChevronDown size={13} style={{ color:"var(--ink-300)", transform:expanded?"rotate(180deg)":"rotate(0)", transition:"transform .2s" }} />
+                  </button>
+                  {expanded && (
+                    <div style={{ padding:"10px 16px 14px 56px", background:"rgba(91,78,232,.025)", borderTop:"1px solid var(--border)" }}>
+                      {src.description && <p style={{ fontSize:12, color:"var(--ink-600)", marginBottom:8 }}>{src.description}</p>}
+                      {(src.sample_queries as string[]|undefined)?.length ? (
+                        <div>
+                          <p style={{ fontSize:11, fontWeight:650, color:"var(--ink-400)", marginBottom:5 }}>示例查询</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {(src.sample_queries as string[]).slice(0,4).map((q,i) => (
+                              <span key={i} style={{ fontSize:11.5, padding:"2px 8px", borderRadius:6,
+                                background:"var(--bg-subtle)", border:"1px solid var(--border)", color:"var(--ink-600)" }}>{q}</span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      <div className="flex gap-4 mt-2" style={{ fontSize:11, color:"var(--ink-400)" }}>
+                        {src.source_type && <span>类型：{src.source_type}</span>}
+                        {src.requires_api_key && <span style={{ color:"#f59e0b" }}>⚠ 需要 API Key</span>}
+                        {src.last_synced_at && <span>同步：{new Date(src.last_synced_at).toLocaleDateString()}</span>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TAB 2: 项目数据库
+// 三栏布局：项目列表 | 数据模式选择 | 文件/文档列表
+// ═══════════════════════════════════════════════════════════════════════════════
+
+type DataMode = "structured" | "documents";
+
+const DATA_MODE_CONFIG = {
+  structured: {
+    label: "结构化数据",
+    icon: Table2,
+    color: "#2563eb",
+    bg: "#eff6ff",
+    border: "#bfdbfe",
+    desc: "CSV · Excel · Parquet",
+    hint: "自动注册为 DuckDB 数据表，支持自然语言查询",
+    accept: ".csv,.xlsx,.xls,.parquet,.tsv",
+    emptyText: "拖拽 CSV / Excel 文件到此处",
+  },
+  documents: {
+    label: "知识文档",
+    icon: Brain,
+    color: "#7c3aed",
+    bg: "#faf5ff",
+    border: "#e9d5ff",
+    desc: "PDF · Word · TXT · MD",
+    hint: "向量化入库，参与 RAG 检索与本体建模",
+    accept: ".pdf,.docx,.doc,.txt,.md,.pptx,.html",
+    emptyText: "拖拽文档到此处上传",
+  },
+} as const;
+
+function ProjectKBTab({ initialProjectId }: { initialSubTab?: "tables"|"graph"; initialProjectId?: number; }) {
+  const [projects, setProjects]         = useState<Project[]>([]);
+  const [selProjectId, setSelProjectId] = useState<number|null>(initialProjectId ?? null);
+  const [dataMode, setDataMode]         = useState<DataMode>("structured");
+  const [loading, setLoading]           = useState(true);
+  const [showCreateProject, setShowCreateProject] = useState(false);
+  const [newProjectName, setNewProjectName]       = useState("");
+  const [newProjectDesc, setNewProjectDesc]       = useState("");
+  const [creatingProject, setCreatingProject]     = useState(false);
+
+  // Structured files
+  const [structFiles, setStructFiles]   = useState<UploadedFileRecord[]>([]);
+  const [structLoading, setStructLoading] = useState(false);
+
+  // KB / docs
+  const [projectKBs, setProjectKBs]     = useState<KnowledgeBase[]>([]);
+  const [selKbId, setSelKbId]           = useState<number|null>(null);
+  const [docs, setDocs]                 = useState<KBDocument[]>([]);
+  const [docsLoading, setDocsLoading]   = useState(false);
+  const [showCreateKb, setShowCreateKb] = useState(false);
+  const [newKbName, setNewKbName]       = useState("");
+
+  const [uploading, setUploading]   = useState(false);
+  const [dragging, setDragging]     = useState(false);
+  const [msg, setMsg]               = useState<{type:"ok"|"err"; text:string}|null>(null);
+  const structRef = useRef<HTMLInputElement>(null);
+  const docRef    = useRef<HTMLInputElement>(null);
+
+  const selKb = projectKBs.find((k) => k.id === selKbId);
+
+  const loadProjects = useCallback(async () => {
+    setLoading(true);
+    const res = await safeCall(api.listProjects(), { items:[], total:0 });
+    const items = res.items || [];
+    setProjects(items);
+    if (!selProjectId && items[0]) setSelProjectId(items[0].id);
+    setLoading(false);
+  }, [selProjectId]);
+
+  const loadStructured = useCallback(async () => {
+    setStructLoading(true);
+    const res = await safeCall(api.listFiles(), { files:[] });
+    const all = (res.files || []) as UploadedFileRecord[];
+    setStructFiles(all.filter((f) => isStructured(f.original_name || f.filename || "")));
+    setStructLoading(false);
+  }, []);
+
+  const loadKBs = useCallback(async (pid: number) => {
+    const res = await safeCall(api.listProjectKBs(pid), { items:[], total:0 });
+    setProjectKBs(res.items || []);
+    setSelKbId(null); setDocs([]);
+  }, []);
+
+  const loadDocs = useCallback(async (kbId: number) => {
+    setDocsLoading(true);
+    const res = await safeCall(api.listKBDocuments(kbId), { items:[], total:0 });
+    setDocs(res.items || []);
+    setDocsLoading(false);
+  }, []);
+
+  useEffect(() => { loadProjects(); }, []); // eslint-disable-line
+  useEffect(() => { if (dataMode === "structured") loadStructured(); }, [dataMode, loadStructured]);
+  useEffect(() => { if (selProjectId) loadKBs(selProjectId); }, [selProjectId, loadKBs]);
+  useEffect(() => { if (selKbId) loadDocs(selKbId); }, [selKbId, loadDocs]);
+
+  const createProject = async () => {
+    if (!newProjectName.trim()) return;
+    setCreatingProject(true);
+    try {
+      const res = await api.createProject(newProjectName.trim(), newProjectDesc.trim());
+      setNewProjectName(""); setNewProjectDesc(""); setShowCreateProject(false);
+      await loadProjects();
+      setSelProjectId((res as any).id);
+      setMsg({ type:"ok", text:`项目「${(res as any).name}」已创建` });
+    } catch {
+      setMsg({ type:"err", text:"创建项目失败，请先登录" });
+    }
+    setCreatingProject(false);
+  };
+
+  const uploadStructured = async (file: File) => {
+    if (!isStructured(file.name)) {
+      setMsg({ type:"err", text:`格式不支持：${file.name.split(".").pop()?.toUpperCase()}。请上传 CSV / Excel / Parquet` });
+      return;
+    }
+    setUploading(true);
+    try {
+      const up = await api.uploadFile(file);
+      await api.duckdbRegister("project-" + (selProjectId || "0"), up.id);
+      await loadStructured();
+      setMsg({ type:"ok", text:`${file.name} 已上传并注册为数据表` });
+    } catch { setMsg({ type:"err", text:`${file.name} 上传失败` }); }
+    setUploading(false);
+  };
+
+  const uploadDoc = async (file: File) => {
+    if (!selKbId) { setMsg({ type:"err", text:"请先选择或新建知识库" }); return; }
+    setUploading(true);
+    try {
+      await api.uploadKBDocument(selKbId, file);
+      await loadDocs(selKbId);
+      setMsg({ type:"ok", text:`${file.name} 已加入知识库` });
+    } catch { setMsg({ type:"err", text:`${file.name} 上传失败` }); }
+    setUploading(false);
+  };
+
+  const createKB = async () => {
+    if (!newKbName.trim()) return;
+    try {
+      const kb = await api.createKB(newKbName.trim(), { scope:"personal" });
+      setNewKbName(""); setShowCreateKb(false);
+      if (selProjectId) await loadKBs(selProjectId);
+      setSelKbId(kb.id);
+      setMsg({ type:"ok", text:"知识库已创建" });
+    } catch { setMsg({ type:"err", text:"创建失败，请先登录" }); }
+  };
+
+  const deleteDoc = async (docId: number) => {
+    if (!selKbId) return;
+    try { await api.deleteKBDocument(selKbId, docId); await loadDocs(selKbId); }
+    catch { setMsg({ type:"err", text:"删除失败" }); }
+  };
+
+  const onDrop = async (e: React.DragEvent) => {
+    e.preventDefault(); setDragging(false);
+    for (const f of Array.from(e.dataTransfer.files)) {
+      if (dataMode === "structured") await uploadStructured(f);
+      else await uploadDoc(f);
+    }
+  };
+
+  const cfg = DATA_MODE_CONFIG[dataMode];
+  const ModeIcon = cfg.icon;
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-40 gap-2">
+        <Loader2 size={18} className="animate-spin" style={{ color:"var(--ink-300)" }} />
+        <span style={{ fontSize:13, color:"var(--ink-400)" }}>加载项目…</span>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* Toast */}
+      {msg && (
+        <div className="flex items-center gap-2 rounded-xl px-4 py-3 mb-5 text-[12.5px]"
+          style={{ background:msg.type==="ok"?"#f0fdf4":"#fef2f2",
+            border:`1px solid ${msg.type==="ok"?"#86efac":"#fca5a5"}`,
+            color:msg.type==="ok"?"#15803d":"#dc2626" }}>
+          {msg.type==="ok" ? <CheckCircle2 size={14}/> : <AlertCircle size={14}/>}
+          <span>{msg.text}</span>
+          <button className="ml-auto p-0.5 rounded hover:bg-black/5" onClick={() => setMsg(null)}>
+            <X size={13}/>
+          </button>
+        </div>
+      )}
+
+      <div className="flex gap-5" style={{ minHeight: 520 }}>
+
+        {/* ══ Col 1: Projects (220px) ══════════════════════════ */}
+        <div style={{ width: 220, flexShrink: 0 }}>
+          <div className="flex items-center justify-between mb-3">
+            <span style={{ fontSize:11, fontWeight:700, color:"var(--ink-400)",
+              textTransform:"uppercase", letterSpacing:".08em" }}>项目</span>
+            <button onClick={() => setShowCreateProject((v) => !v)}
+              className="flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11.5px] font-semibold transition-all"
+              style={{ color: showCreateProject ? "#fff" : "var(--brand)",
+                background: showCreateProject ? "var(--brand)" : "rgba(91,78,232,.08)",
+                border: "1px solid transparent" }}>
+              <Plus size={11}/> 新建
+            </button>
+          </div>
+
+          {/* Create project form */}
+          {showCreateProject && (
+            <div className="rounded-xl mb-3 overflow-hidden"
+              style={{ border:"1px solid var(--brand)", boxShadow:"0 0 0 3px rgba(91,78,232,.1)" }}>
+              <div className="px-3 py-2.5" style={{ background:"rgba(91,78,232,.04)" }}>
+                <input value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)}
+                  placeholder="项目名称*" onKeyDown={(e) => e.key==="Enter" && createProject()}
+                  className="w-full text-[13px] font-medium bg-transparent outline-none"
+                  style={{ color:"var(--ink-900)" }} autoFocus />
+                <input value={newProjectDesc} onChange={(e) => setNewProjectDesc(e.target.value)}
+                  placeholder="描述（可选）"
+                  className="w-full text-[12px] bg-transparent outline-none mt-1.5"
+                  style={{ color:"var(--ink-500)" }} />
+              </div>
+              <div className="flex items-center gap-2 px-3 py-2"
+                style={{ borderTop:"1px solid rgba(91,78,232,.15)", background:"var(--bg-elevated)" }}>
+                <button onClick={createProject} disabled={creatingProject || !newProjectName.trim()}
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-[12px] font-semibold transition"
+                  style={{ background:"var(--brand)", color:"#fff",
+                    opacity: (creatingProject || !newProjectName.trim()) ? .5 : 1 }}>
+                  {creatingProject ? <Loader2 size={11} className="animate-spin"/> : null}
+                  创建项目
+                </button>
+                <button onClick={() => { setShowCreateProject(false); setNewProjectName(""); setNewProjectDesc(""); }}
+                  className="px-3 py-1 rounded-lg text-[12px] transition"
+                  style={{ color:"var(--ink-500)", background:"var(--bg-subtle)" }}>取消</button>
+              </div>
+            </div>
+          )}
+
+          {/* Project list */}
+          {projects.length === 0 ? (
+            <div className="flex flex-col items-center py-12 text-center gap-2">
+              <div className="h-10 w-10 rounded-xl flex items-center justify-center"
+                style={{ background:"var(--bg-subtle)" }}>
+                <FolderOpen size={18} style={{ color:"var(--ink-300)" }}/>
+              </div>
+              <p style={{ fontSize:12.5, color:"var(--ink-400)", fontWeight:500 }}>暂无项目</p>
+              <p style={{ fontSize:11, color:"var(--ink-300)" }}>点击「新建」创建第一个项目</p>
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {projects.map((p, i) => {
+                const active = selProjectId === p.id;
+                const hues = ["#6366f1","#0ea5e9","#10b981","#f59e0b","#ec4899","#8b5cf6"];
+                const color = hues[i % hues.length];
+                return (
+                  <button key={p.id} onClick={() => setSelProjectId(p.id)}
+                    className="w-full text-left rounded-xl px-3 py-2.5 transition-all group"
+                    style={{ background: active ? color : "var(--bg-elevated)",
+                      border: `1px solid ${active ? color : "var(--border)"}`,
+                      boxShadow: active ? `0 2px 8px ${color}30` : "none" }}>
+                    <div className="flex items-center gap-2">
+                      <div className="h-6 w-6 rounded-lg flex items-center justify-center flex-shrink-0 text-[10px] font-bold"
+                        style={{ background: active ? "rgba(255,255,255,.2)" : `${color}18`,
+                          color: active ? "#fff" : color }}>
+                        {p.name.slice(0,1)}
+                      </div>
+                      <p className="font-semibold truncate text-[13px]"
+                        style={{ color: active ? "#fff" : "var(--ink-800)" }}>
+                        {p.name}
+                      </p>
+                    </div>
+                    {p.description && (
+                      <p className="truncate mt-0.5 ml-8 text-[11px]"
+                        style={{ color: active ? "rgba(255,255,255,.75)" : "var(--ink-400)" }}>
+                        {p.description}
+                      </p>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* ══ Col 2: Data type cards (200px) ═══════════════════ */}
+        <div style={{ width: 196, flexShrink: 0 }}>
+          <span style={{ fontSize:11, fontWeight:700, color:"var(--ink-400)",
+            textTransform:"uppercase", letterSpacing:".08em", display:"block", marginBottom:12 }}>
+            数据类型
+          </span>
+          <div className="flex flex-col gap-3">
+            {(Object.entries(DATA_MODE_CONFIG) as [DataMode, typeof cfg][]).map(([mode, c]) => {
+              const Icon = c.icon;
+              const active = dataMode === mode;
+              return (
+                <button key={mode} onClick={() => setDataMode(mode)}
+                  className="text-left rounded-xl p-3.5 transition-all"
+                  style={{ background: active ? c.bg : "var(--bg-elevated)",
+                    border: `1.5px solid ${active ? c.border : "var(--border)"}`,
+                    boxShadow: active ? `0 2px 12px ${c.color}15` : "none" }}>
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <div className="h-7 w-7 rounded-lg flex items-center justify-center"
+                      style={{ background: active ? c.color : `${c.color}15`,
+                        color: active ? "#fff" : c.color }}>
+                      <Icon size={14}/>
+                    </div>
+                    <span style={{ fontSize:13, fontWeight:650,
+                      color: active ? c.color : "var(--ink-800)" }}>{c.label}</span>
+                  </div>
+                  <p style={{ fontSize:11, color: active ? c.color : "var(--ink-400)",
+                    opacity: active ? .8 : 1, lineHeight: 1.5 }}>
+                    {c.desc}
+                  </p>
+                  <p style={{ fontSize:10.5, color:"var(--ink-400)", marginTop:4, lineHeight:1.4 }}>
+                    {c.hint}
+                  </p>
                 </button>
               );
             })}
           </div>
         </div>
 
-        {/* 传统领域覆盖卡片 */}
-        <LayerCoverageCards summary={summary} />
-      </div>
-
-      {/* Right: 选中层的详情 */}
-      {selectedLayer && !WORLDVIEW_LAYERS.find(l => l.id === selectedLayer) && (
-        <div className="w-80 border-l border-gray-200 bg-white overflow-auto">
-          <GraphNodeDetailPanel
-            nodes={graphData?.nodes || []}
-            selectedId={selectedLayer}
-            onClose={() => setSelectedLayer(null)}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-// 层详情面板
-function LayerDetailPanel({ layer, actualGb }: { layer: WorldviewLayer; actualGb: number }) {
-  const pct = Math.min((actualGb / layer.budgetGb) * 100, 100);
-  const status = pct >= 50 ? "良好" : pct >= 20 ? "一般" : "需补充";
-  const statusColor = pct >= 50 ? "#10b981" : pct >= 20 ? "#f59e0b" : "#ef4444";
-
-  // 该层的关键数据源（示例数据）
-  const keySources: Record<string, string[]> = {
-    L0: ["Wikidata Schema本体", "Schema.org本体", "DBpedia Ontology", "OpenKG schema"],
-    L1: ["巨潮资讯A股年报", "国家统计局", "世界银行数据", "联合国数据", "中国人民银行"],
-    L2: ["Wikidata实体关系", "OpenKG知识图谱", "供应链数据", "社交网络关系"],
-    L3: ["arXiv因果推断", "经济机制模型", "物理机制论文", "医学机制文献"],
-    L4: ["法律法规库", "证监会规章", "行业标准", "国际条约"],
-    L5: ["认知科学论文", "决策理论", "思维模型库", "心理学研究"],
-    L6: ["GitHub工程代码", "算法实现", "技术文档", "最佳实践指南"],
-    L7: ["多模态数据集", "图文对齐数据", "视频理解数据"],
-    L8: ["A股历史序列", "宏观经济时序", "政策演变轨迹"],
-    L9: ["误差分析数据", "反面证据库", "边界条件案例"],
-  };
-
-  const sources = keySources[layer.id] || [];
-
-  return (
-    <div className="px-4 pb-4 border-t border-gray-100/50">
-      <div className="pt-3 space-y-3">
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] text-gray-500">状态:</span>
-          <span className="text-[12px] font-medium px-2 py-0.5 rounded-full"
-            style={{ backgroundColor: statusColor + "15", color: statusColor }}>
-            {status}
-          </span>
-          <span className="text-[11px] text-gray-400 ml-auto">
-            剩余空间: {(layer.budgetGb - actualGb).toFixed(1)}GB
-          </span>
-        </div>
-
-        <div>
-          <p className="text-[11px] font-semibold text-gray-500 mb-1.5">关键数据源</p>
-          <div className="flex flex-wrap gap-1.5">
-            {sources.map((s) => (
-              <span
-                key={s}
-                className="px-2 py-1 rounded-lg text-[11px] border"
-                style={{
-                  backgroundColor: layer.bgColor,
-                  borderColor: layer.borderColor,
-                  color: "#374151",
-                }}
-              >
-                {s}
-              </span>
-            ))}
+        {/* ══ Col 3: Content area (flex-1) ═════════════════════ */}
+        <div className="flex-1 min-w-0">
+          {/* Header with upload button */}
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 style={{ fontSize:14, fontWeight:650, color:"var(--ink-900)" }}>
+                {cfg.label}
+                {dataMode === "documents" && selKb && (
+                  <span style={{ fontSize:12, fontWeight:400, color:"var(--ink-400)", marginLeft:8 }}>
+                    · {selKb.name}
+                  </span>
+                )}
+              </h3>
+              <p style={{ fontSize:11.5, color:"var(--ink-400)", marginTop:2 }}>
+                {dataMode === "structured"
+                  ? `${structFiles.length} 个数据表已注册`
+                  : selKb
+                    ? `${fmt(selKb.doc_count)} 文档 · ${fmtSize(selKb.total_size)}`
+                    : "选择知识库后上传文档"}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {dataMode === "documents" && (
+                <div className="flex items-center gap-1.5">
+                  {/* KB quick select */}
+                  {projectKBs.length > 0 && (
+                    <select value={selKbId ?? ""} onChange={(e) => setSelKbId(Number(e.target.value))}
+                      className="text-[12px] rounded-lg px-2.5 py-1.5 outline-none"
+                      style={{ background:"var(--bg-elevated)", border:"1px solid var(--border)", color:"var(--ink-700)" }}>
+                      <option value="">选择知识库</option>
+                      {projectKBs.map((kb) => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
+                    </select>
+                  )}
+                  <button onClick={() => setShowCreateKb((v) => !v)}
+                    className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[12px] font-medium"
+                    style={{ color:"var(--ink-600)", background:"var(--bg-elevated)", border:"1px solid var(--border)" }}>
+                    <Plus size={12}/> 新建 KB
+                  </button>
+                </div>
+              )}
+              <input ref={dataMode==="structured" ? structRef : docRef} type="file" className="hidden"
+                accept={cfg.accept}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  if (dataMode==="structured") uploadStructured(f);
+                  else uploadDoc(f);
+                }}/>
+              <button
+                onClick={() => (dataMode==="structured" ? structRef : docRef).current?.click()}
+                disabled={uploading || (dataMode==="documents" && !selKbId)}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-[12.5px] font-semibold transition"
+                style={{ background: "var(--ink-900)", color:"#fff",
+                  opacity: (uploading || (dataMode==="documents" && !selKbId)) ? .45 : 1 }}>
+                {uploading ? <Loader2 size={13} className="animate-spin"/> : <Upload size={13}/>}
+                上传{dataMode==="structured" ? "数据" : "文档"}
+              </button>
+            </div>
           </div>
-        </div>
 
-        <div className="grid grid-cols-3 gap-2">
-          <div className="bg-white/60 rounded-lg p-2 text-center">
-            <p className="text-[10px] text-gray-400">置信度范围</p>
-            <p className="text-[12px] font-semibold text-gray-700">0.7 - 1.0</p>
+          {/* Create KB inline form */}
+          {dataMode === "documents" && showCreateKb && (
+            <div className="rounded-xl p-3 mb-3 flex items-center gap-2"
+              style={{ background:"rgba(91,78,232,.04)", border:"1px solid rgba(91,78,232,.2)" }}>
+              <input value={newKbName} onChange={(e) => setNewKbName(e.target.value)}
+                placeholder="知识库名称" onKeyDown={(e) => e.key==="Enter" && createKB()}
+                className="flex-1 text-[13px] bg-transparent outline-none" style={{ color:"var(--ink-800)" }} autoFocus/>
+              <button onClick={createKB} className="px-3 py-1 rounded-lg text-[12px] font-medium"
+                style={{ background:"var(--brand)", color:"#fff" }}>创建</button>
+              <button onClick={() => { setShowCreateKb(false); setNewKbName(""); }}
+                className="p-1 rounded" style={{ color:"var(--ink-400)" }}><X size={13}/></button>
+            </div>
+          )}
+
+          {/* Drop zone + file list */}
+          <div
+            className={`rounded-2xl transition-all ${dragging ? "drop-zone-active" : ""}`}
+            style={{ border:`1.5px dashed ${dragging ? "var(--brand)" : "var(--border)"}`,
+              background: dragging ? "rgba(91,78,232,.03)" : "transparent",
+              minHeight: 320, padding: "16px" }}
+            onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={onDrop}>
+
+            {/* Loading */}
+            {(dataMode==="structured" ? structLoading : docsLoading) ? (
+              <div className="flex items-center justify-center h-40 gap-2">
+                <Loader2 size={16} className="animate-spin" style={{ color:"var(--ink-300)" }}/>
+                <span style={{ fontSize:13, color:"var(--ink-400)" }}>加载中…</span>
+              </div>
+            ) : (dataMode==="structured" ? structFiles : docs).length === 0 ? (
+              /* Empty drop zone */
+              <div className="flex flex-col items-center justify-center h-52 text-center gap-3">
+                <div className="h-12 w-12 rounded-2xl flex items-center justify-center"
+                  style={{ background: cfg.bg, border:`1.5px dashed ${cfg.border}` }}>
+                  <ModeIcon size={20} style={{ color: cfg.color }}/>
+                </div>
+                <div>
+                  <p style={{ fontSize:13.5, fontWeight:600, color:"var(--ink-600)" }}>{cfg.emptyText}</p>
+                  <p style={{ fontSize:12, color:"var(--ink-400)", marginTop:4 }}>
+                    支持 {cfg.desc}
+                  </p>
+                </div>
+              </div>
+            ) : dataMode === "structured" ? (
+              /* Structured file list */
+              <div className="space-y-2">
+                <p style={{ fontSize:11, fontWeight:700, color:"var(--ink-400)", marginBottom:10,
+                  textTransform:"uppercase", letterSpacing:".07em" }}>
+                  已注册数据表 · {structFiles.length}
+                </p>
+                {structFiles.map((f) => {
+                  const ext = (f.original_name||f.filename||"").split(".").pop()?.toUpperCase()||"?";
+                  const isCSV = ["CSV","TSV"].includes(ext);
+                  return (
+                    <div key={f.id} className="flex items-center gap-3 rounded-xl px-4 py-3 group transition"
+                      style={{ background:"var(--bg-elevated)", border:"1px solid var(--border)" }}>
+                      <div className="h-8 w-8 rounded-lg flex items-center justify-center flex-shrink-0 text-[10px] font-bold"
+                        style={{ background:isCSV?"#dcfce7":"#dbeafe", color:isCSV?"#15803d":"#1d4ed8" }}>
+                        {ext.slice(0,4)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold truncate" style={{ fontSize:13, color:"var(--ink-800)" }}>
+                          {f.original_name||f.filename}
+                        </p>
+                        <p style={{ fontSize:11, color:"var(--ink-400)", marginTop:1.5 }}>
+                          {fmtSize(f.file_size)}
+                          {f.created_at && ` · ${new Date(f.created_at).toLocaleDateString()}`}
+                        </p>
+                      </div>
+                      <span className="flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-lg"
+                        style={{ background:"#f0fdf4", color:"#15803d", border:"1px solid #86efac" }}>
+                        <CheckCircle2 size={11}/> 已注册
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              /* Document list */
+              <div className="space-y-2">
+                <p style={{ fontSize:11, fontWeight:700, color:"var(--ink-400)", marginBottom:10,
+                  textTransform:"uppercase", letterSpacing:".07em" }}>
+                  知识库文档 · {docs.length}
+                </p>
+                {docs.map((doc) => {
+                  const ext = doc.title.split(".").pop()?.toUpperCase() || "DOC";
+                  const extColors: Record<string, {bg:string;text:string}> = {
+                    PDF:{bg:"#fef2f2",text:"#dc2626"}, DOCX:{bg:"#eff6ff",text:"#2563eb"},
+                    DOC:{bg:"#eff6ff",text:"#2563eb"}, TXT:{bg:"#f9fafb",text:"#6b7280"},
+                    MD:{bg:"#f5f3ff",text:"#7c3aed"},
+                  };
+                  const ec = extColors[ext] || {bg:"var(--bg-subtle)",text:"var(--ink-500)"};
+                  return (
+                    <div key={doc.id} className="flex items-center gap-3 rounded-xl px-4 py-3 group transition"
+                      style={{ background:"var(--bg-elevated)", border:"1px solid var(--border)" }}>
+                      <div className="h-8 w-8 rounded-lg flex items-center justify-center flex-shrink-0 text-[9.5px] font-bold"
+                        style={{ background:ec.bg, color:ec.text }}>
+                        {ext.slice(0,4)}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-semibold" style={{ fontSize:13, color:"var(--ink-800)" }}>
+                          {doc.title}
+                        </p>
+                        <p style={{ fontSize:11, color:"var(--ink-400)", marginTop:1.5 }}>
+                          {fmt(doc.chunk_count)} chunks · {fmtSize(doc.file_size)}
+                          {doc.status && (
+                            <span style={{ marginLeft:6, padding:"1px 6px", borderRadius:99,
+                              background: doc.status==="indexed"?"#f0fdf4":"#fff7ed",
+                              color: doc.status==="indexed"?"#15803d":"#c2410c", fontSize:10 }}>
+                              {doc.status}
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                      <button onClick={() => deleteDoc(doc.id)}
+                        className="opacity-0 group-hover:opacity-100 transition p-1.5 rounded-lg"
+                        style={{ color:"#ef4444", background:"#fef2f2" }}>
+                        <Trash2 size={12}/>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
-          <div className="bg-white/60 rounded-lg p-2 text-center">
-            <p className="text-[10px] text-gray-400">来源优先级</p>
-            <p className="text-[12px] font-semibold text-gray-700">P0 - P2</p>
-          </div>
-          <div className="bg-white/60 rounded-lg p-2 text-center">
-            <p className="text-[10px] text-gray-400">时间范围</p>
-            <p className="text-[12px] font-semibold text-gray-700">2020-2026</p>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// 传统领域覆盖卡片
-function LayerCoverageCards({ summary }: { summary: any }) {
-  const domainNodes = summary?.domain_nodes || [];
-  if (!domainNodes.length) return null;
-
-  return (
-    <div>
-      <h3 className="text-[14px] font-semibold text-gray-900 mb-3">领域覆盖详情</h3>
-      <div className="grid grid-cols-4 gap-3 mb-4">
-        {[
-          { label: "计划知识库", value: summary?.total_planned_kbs || 0, unit: "个" },
-          { label: "实际知识库", value: summary?.total_actual_kbs || 0, unit: "个" },
-          { label: "实际文档", value: summary?.total_actual_files || 0, unit: "篇" },
-          { label: "覆盖率", value: `${summary?.total_kb_coverage_pct || 0}%`, unit: "" },
-        ].map((s) => (
-          <div key={s.label} className="bg-white rounded-xl border border-gray-200 p-4">
-            <p className="text-[11px] text-gray-400 font-medium">{s.label}</p>
-            <p className="text-[22px] font-bold text-gray-900 mt-1">
-              {s.value}
-              <span className="text-[12px] font-normal text-gray-400 ml-0.5">{s.unit}</span>
-            </p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function GraphNodeDetailPanel({ nodes, selectedId, onClose }: { nodes: any[]; selectedId: string; onClose: () => void }) {
-  const node = nodes.find((n) => n.id === selectedId);
-  if (!node) return null;
-
-  return (
-    <div className="p-5">
-      <div className="flex items-center justify-between mb-4">
-        <span className="text-[14px] font-semibold text-gray-900">{node.label}</span>
-        <button onClick={onClose} className="p-1 rounded hover:bg-gray-100">
-          <X size={14} className="text-gray-400" />
-        </button>
-      </div>
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <span className="text-[12px] text-gray-500">覆盖率</span>
-          <span className="text-[13px] font-medium" style={{ color: node.color }}>{node.coverage_score}%</span>
         </div>
       </div>
     </div>
@@ -536,689 +922,163 @@ function GraphNodeDetailPanel({ nodes, selectedId, onClose }: { nodes: any[]; se
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// TAB 2: 系统数据库 — 按10层分组
+// TAB 3: 本体建模
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function SystemDBTab() {
-  const [sources, setSources] = useState<OfficialDataSource[]>([]);
-  const [systemKbs, setSystemKbs] = useState<KnowledgeBase[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
-  const [selectedLayerFilter, setSelectedLayerFilter] = useState<string | "all">("all");
-  const [detailSource, setDetailSource] = useState<OfficialDataSource | null>(null);
+function OntologyTab() {
+  const [projects, setProjects]   = useState<Project[]>([]);
+  const [selProjectId, setSelProjectId] = useState<number|null>(null);
+  const [graphData, setGraphData] = useState<{
+    nodes:any[]; edges:any[]; kb_count:number; ontology_count:number;
+  }|null>(null);
+  const [loading, setLoading]     = useState(true);
 
   useEffect(() => {
     Promise.all([
-      api.listOfficialSources(),
-      api.listKBs("corp"),
-    ])
-      .then(([srcRes, kbRes]) => {
-        setSources(srcRes.sources || []);
-        setSystemKbs(kbRes.items || []);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
+      safeCall(api.getOntologyDataGraph(), null),
+      safeCall(api.listProjects(), { items:[], total:0 }),
+    ]).then(([graph, projs]) => {
+      if (graph) setGraphData(graph);
+      const items = projs?.items || [];
+      setProjects(items);
+      if (items[0]) {
+        const saved = localStorage.getItem("da_ontology_project_id");
+        const savedId = saved ? Number(saved) : null;
+        setSelProjectId(savedId && items.find((p:Project) => p.id === savedId) ? savedId : items[0].id);
+      }
+    }).finally(() => setLoading(false));
   }, []);
 
-  const filtered = sources.filter((s) => {
-    const matchLayer = selectedLayerFilter === "all" || s.domain_tags?.some((t) => t.includes(selectedLayerFilter));
-    const matchSearch =
-      !search ||
-      s.name.includes(search) ||
-      s.description?.includes(search) ||
-      s.domain_tags?.some((t) => t.includes(search));
-    return matchLayer && matchSearch;
-  });
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 size={24} className="animate-spin text-gray-300" />
-      </div>
-    );
-  }
+  const ontologyNodes = graphData?.nodes.filter((n) => n.type === "ontology_domain") || [];
+  const kbNodes       = graphData?.nodes.filter((n) => n.type === "knowledge_base") || [];
+  const totalChunks   = kbNodes.reduce((a:number,n:any) => a+(n.chunk_count||0), 0);
+  const totalDocs     = kbNodes.reduce((a:number,n:any) => a+(n.doc_count||0), 0);
 
   return (
-    <div className="flex h-full overflow-hidden">
-      {/* Main grid */}
-      <div className="flex-1 overflow-auto p-6">
-        {/* Search + layer filter */}
-        <div className="flex items-center gap-3 mb-5">
-          <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white border border-gray-200 flex-1 max-w-md">
-            <Search size={14} className="text-gray-400" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="搜索系统数据库…"
-              className="flex-1 bg-transparent text-[13px] outline-none placeholder:text-gray-300"
-            />
-          </div>
+    <div>
+      {loading ? (
+        <div className="flex items-center gap-2 h-20">
+          <Loader2 size={18} className="animate-spin" style={{ color:"var(--ink-300)" }}/>
+          <span style={{ fontSize:13, color:"var(--ink-400)" }}>加载本体数据…</span>
         </div>
-
-        {/* 10层过滤标签 */}
-        <div className="flex items-center gap-1.5 mb-4 flex-wrap">
-          <button
-            onClick={() => setSelectedLayerFilter("all")}
-            className={`px-3 py-1.5 rounded-lg text-[11px] transition-colors ${
-              selectedLayerFilter === "all"
-                ? "bg-slate-800 text-white"
-                : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"
-            }`}
-          >
-            全部
-          </button>
-          {WORLDVIEW_LAYERS.map((layer) => {
-            const isActive = selectedLayerFilter === layer.id;
-            return (
-              <button
-                key={layer.id}
-                onClick={() => setSelectedLayerFilter(isActive ? "all" : layer.id)}
-                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] transition-colors border ${
-                  isActive
-                    ? "text-white"
-                    : "text-gray-600 hover:bg-gray-50"
-                }`}
-                style={{
-                  backgroundColor: isActive ? layer.color : layer.bgColor,
-                  borderColor: isActive ? layer.color : layer.borderColor,
-                }}
-              >
-                <layer.icon size={12} />
-                {layer.id} {layer.name}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Stats */}
-        <div className="flex items-center gap-4 mb-4 text-[12px] text-gray-500">
-          <span>共 {sources.length} 个数据源</span>
-          <span>·</span>
-          <span>{systemKbs.length} 个已入库系统知识库</span>
-          <span>·</span>
-          <span>筛选后 {filtered.length} 个</span>
-        </div>
-
-        {/* Card grid */}
-        <div className="grid grid-cols-3 gap-4">
-          {filtered.map((src) => {
-            const matchedKb = systemKbs.find(
-              (kb) =>
-                kb.name.includes(src.key) ||
-                src.name.includes(kb.name) ||
-                kb.kb_type === src.source_type
-            );
-            // 查找该数据源所属的世界观层
-            const layer = WORLDVIEW_LAYERS.find((l) =>
-              src.domain_tags?.some((t) => t.includes(l.id))
-            ) || WORLDVIEW_LAYERS[1];
-
-            return (
-              <button
-                key={src.key}
-                onClick={() => setDetailSource(src)}
-                className="text-left bg-white rounded-xl border border-gray-200 p-4 hover:shadow-md hover:border-emerald-200 transition-all group"
-              >
-                <div className="flex items-start justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-bold text-white shrink-0"
-                      style={{ background: layer.color }}
-                    >
-                      {layer.id}
-                    </span>
-                    <span className="text-[13px] font-semibold text-gray-900 truncate">{src.name}</span>
-                  </div>
-                  {matchedKb && (
-                    <span className="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 text-[10px] font-medium">
-                      已入库
-                    </span>
-                  )}
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+            {[
+              { label:"本体领域",    value:fmt(graphData?.ontology_count||ontologyNodes.length), icon:Brain,    color:"#6366f1" },
+              { label:"系统 KB",     value:fmt(graphData?.kb_count||kbNodes.length),             icon:Database, color:"#0ea5e9" },
+              { label:"已索引文档",  value:fmt(totalDocs),                                       icon:FileText, color:"#10b981" },
+              { label:"向量 Chunks", value:fmt(totalChunks),                                     icon:Zap,      color:"#f59e0b" },
+            ].map((s) => (
+              <div key={s.label} className="rounded-xl p-4 kb-card"
+                style={{ background:"var(--bg-elevated)", border:"1px solid var(--border)" }}>
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <s.icon size={13} style={{ color:s.color }}/>
+                  <span style={{ fontSize:11, color:"var(--ink-400)", fontWeight:500 }}>{s.label}</span>
                 </div>
-                <p className="text-[12px] text-gray-500 line-clamp-2 mb-3">{src.description}</p>
-                <div className="flex items-center gap-2 flex-wrap">
-                  {src.domain_tags?.slice(0, 3).map((tag) => (
-                    <span
-                      key={tag}
-                      className="px-1.5 py-0.5 rounded text-[10px]"
-                      style={{
-                        backgroundColor: layer.bgColor,
-                        color: layer.color,
-                      }}
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-                <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-50">
-                  <span className="text-[11px] text-gray-400">{src.coverage}</span>
-                  <ChevronRight
-                    size={14}
-                    className="text-gray-300 group-hover:text-emerald-500 transition-colors"
-                  />
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Detail drawer */}
-      {detailSource && (
-        <div className="w-96 border-l border-gray-200 bg-white overflow-auto">
-          <SystemSourceDetail
-            source={detailSource}
-            matchedKb={systemKbs.find(
-              (kb) =>
-                kb.name.includes(detailSource.key) ||
-                detailSource.name.includes(kb.name)
-            )}
-            onClose={() => setDetailSource(null)}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SystemSourceDetail({
-  source,
-  matchedKb,
-  onClose,
-}: {
-  source: OfficialDataSource;
-  matchedKb?: KnowledgeBase;
-  onClose: () => void;
-}) {
-  const [samples, setSamples] = useState<Array<{ kb_id: number; kb_name: string; content: string }>>([]);
-
-  useEffect(() => {
-    api.getOfficialSourceSample(source.key)
-      .then((r) => setSamples(r.samples || []))
-      .catch(() => setSamples([]));
-  }, [source.key]);
-
-  return (
-    <div className="p-5">
-      <div className="flex items-center justify-between mb-5">
-        <div className="flex items-center gap-2">
-          <span
-            className="inline-flex h-8 w-8 items-center justify-center rounded-full text-white font-bold"
-            style={{ background: source.icon_color, fontSize: 13 }}
-          >
-            {source.name.charAt(0)}
-          </span>
-          <span className="text-[15px] font-semibold text-gray-900">{source.name}</span>
-        </div>
-        <button onClick={onClose} className="p-1 rounded hover:bg-gray-100">
-          <X size={16} className="text-gray-400" />
-        </button>
-      </div>
-
-      <div className="space-y-4">
-        <div>
-          <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1">描述</p>
-          <p className="text-[13px] text-gray-700 leading-relaxed">{source.description}</p>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div className="bg-gray-50 rounded-lg p-3">
-            <p className="text-[11px] text-gray-400">分类</p>
-            <p className="text-[13px] font-medium text-gray-800 mt-0.5">{source.category}</p>
-          </div>
-          <div className="bg-gray-50 rounded-lg p-3">
-            <p className="text-[11px] text-gray-400">数据范围</p>
-            <p className="text-[13px] font-medium text-gray-800 mt-0.5">{source.coverage}</p>
-          </div>
-          <div className="bg-gray-50 rounded-lg p-3">
-            <p className="text-[11px] text-gray-400">文档数</p>
-            <p className="text-[13px] font-medium text-gray-800 mt-0.5">{(source.doc_count || 0).toLocaleString()}</p>
-          </div>
-          <div className="bg-gray-50 rounded-lg p-3">
-            <p className="text-[11px] text-gray-400">状态</p>
-            <p className="text-[13px] font-medium mt-0.5">
-              {matchedKb ? (
-                <span className="text-emerald-600">已入库 ({matchedKb.chunk_count || 0} 切片)</span>
-              ) : (
-                <span className="text-gray-400">未入库</span>
-              )}
-            </p>
-          </div>
-        </div>
-
-        {source.sample_queries && source.sample_queries.length > 0 && (
-          <div>
-            <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-2">示例查询</p>
-            <div className="space-y-1.5">
-              {source.sample_queries.map((q, i) => (
-                <div
-                  key={i}
-                  className="px-3 py-2 rounded-lg bg-gray-50 text-[12px] text-gray-600"
-                >
-                  {q}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {samples.length > 0 && (
-          <div>
-            <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-2">内容预览</p>
-            <div className="space-y-2">
-              {samples.map((s, i) => (
-                <div key={i} className="p-3 rounded-lg bg-gray-50 border border-gray-100">
-                  <p className="text-[10px] text-gray-400 mb-1">{s.kb_name}</p>
-                  <p className="text-[12px] text-gray-600 line-clamp-4">{s.content}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TAB 3: 用户数据库 (preserved from original)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function UserDBTab() {
-  const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [docs, setDocs] = useState<KBDocument[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [showCreate, setShowCreate] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
-  const fileInput = useRef<HTMLInputElement>(null);
-
-  const selected = kbs.find((k) => k.id === selectedId) || null;
-
-  const loadKBs = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await api.listKBs();
-      setKbs(res.items || []);
-      if (res.items?.length && selectedId == null) setSelectedId(res.items[0].id);
-    } catch (e) {
-      setMsg({ type: "err", text: String((e as Error)?.message || e) });
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedId]);
-
-  const loadDocs = useCallback(async (kbId: number) => {
-    try {
-      const res = await api.listKBDocuments(kbId);
-      setDocs(res.items || []);
-    } catch {
-      setDocs([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadKBs();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (selectedId != null) loadDocs(selectedId);
-  }, [selectedId, loadDocs]);
-
-  const handleUpload = useCallback(
-    async (files: FileList | File[]) => {
-      if (selectedId == null) return;
-      setUploading(true);
-      setMsg(null);
-      let ok = 0, fail = 0;
-      for (const file of Array.from(files)) {
-        try {
-          await api.uploadKBDocument(selectedId, file);
-          ok++;
-        } catch {
-          fail++;
-        }
-      }
-      setUploading(false);
-      setMsg({
-        type: fail ? "err" : "ok",
-        text: `入库完成：成功 ${ok}${fail ? `，失败 ${fail}` : ""}`,
-      });
-      await loadDocs(selectedId);
-      await loadKBs();
-    },
-    [selectedId, loadDocs, loadKBs]
-  );
-
-  const handleDeleteDoc = useCallback(
-    async (docId: number) => {
-      if (selectedId == null) return;
-      try {
-        await api.deleteKBDocument(selectedId, docId);
-        await loadDocs(selectedId);
-        await loadKBs();
-      } catch (e) {
-        setMsg({ type: "err", text: String((e as Error)?.message || e) });
-      }
-    },
-    [selectedId, loadDocs, loadKBs]
-  );
-
-  return (
-    <div className="flex h-full overflow-hidden">
-      {/* Left: KB list */}
-      <div className="w-72 shrink-0 border-r border-gray-100 bg-white overflow-auto">
-        <div className="p-3 border-b border-gray-100">
-          <button
-            onClick={() => setShowCreate(true)}
-            className="flex items-center justify-center gap-1.5 w-full px-3 py-2 rounded-lg bg-emerald-500 text-white text-[13px] font-medium hover:bg-emerald-600 transition-colors"
-          >
-            <Plus size={15} /> 新建知识库
-          </button>
-        </div>
-        {loading ? (
-          <div className="flex items-center justify-center h-32 text-gray-400">
-            <Loader2 size={20} className="animate-spin" />
-          </div>
-        ) : kbs.length === 0 ? (
-          <div className="text-center mt-12 px-6">
-            <Layers size={32} className="mx-auto text-gray-300 mb-2" />
-            <p className="text-[13px] text-gray-400">还没有知识库</p>
-            <p className="text-[11px] text-gray-300 mt-1">点击「新建知识库」开始构造你的语义库</p>
-          </div>
-        ) : (
-          <div className="p-2">
-            {kbs.map((kb) => (
-              <button
-                key={kb.id}
-                onClick={() => setSelectedId(kb.id)}
-                className={`w-full text-left rounded-xl px-3 py-2.5 mb-1 transition-colors ${
-                  selectedId === kb.id
-                    ? "bg-emerald-50 ring-1 ring-emerald-200"
-                    : "hover:bg-gray-50"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="text-[16px]">{typeIcon(kb.kb_type)}</span>
-                  <span className="text-[13px] font-medium text-gray-800 truncate flex-1">
-                    {kb.name}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 mt-1 text-[11px] text-gray-400">
-                  <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">
-                    {kb.type_label || kb.kb_type}
-                  </span>
-                  <span>{kb.doc_count || 0} 篇</span>
-                  <span>·</span>
-                  <span>{kb.size_display || "0 B"}</span>
-                </div>
-              </button>
+                <div style={{ fontSize:22, fontWeight:720, color:"var(--ink-900)" }}>{s.value}</div>
+              </div>
             ))}
           </div>
-        )}
-      </div>
 
-      {/* Right: KB detail */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {selected ? (
-          <>
-            {/* KB summary */}
-            <div className="px-6 py-4 border-b border-gray-100 bg-white">
-              <div className="flex items-center gap-2">
-                <span className="text-[20px]">{typeIcon(selected.kb_type)}</span>
-                <h2 className="text-[15px] font-semibold text-gray-900">{selected.name}</h2>
-                <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">
-                  {selected.type_label || selected.kb_type}
+          <div className="grid grid-cols-2 gap-5 mb-8">
+            {/* Ontology domains */}
+            <div className="rounded-xl p-4" style={{ border:"1px solid var(--border)", background:"var(--bg-elevated)" }}>
+              <h3 className="flex items-center gap-2 mb-3" style={{ fontSize:13, fontWeight:650, color:"var(--ink-700)" }}>
+                <Brain size={13} style={{ color:"var(--ink-400)" }}/>
+                系统本体领域
+                <span style={{ fontSize:10.5, padding:"1px 6px", borderRadius:99, background:"var(--bg-subtle)", color:"var(--ink-400)" }}>
+                  {ontologyNodes.length}
                 </span>
-              </div>
-              <div className="flex items-center gap-4 mt-2 text-[12px] text-gray-500">
-                <span className="flex items-center gap-1">
-                  <FileStack size={13} /> {selected.doc_count || 0} 篇文档
-                </span>
-                <span className="flex items-center gap-1">
-                  <Layers size={13} /> {selected.chunk_count || 0} 切片
-                </span>
-                <span className="flex items-center gap-1">
-                  <HardDrive size={13} /> {selected.size_display || "0 B"}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-auto p-6 space-y-4">
-              {/* Upload zone */}
-              <div
-                onDrop={(e) => {
-                  e.preventDefault();
-                  if (e.dataTransfer.files.length) handleUpload(e.dataTransfer.files);
-                }}
-                onDragOver={(e) => e.preventDefault()}
-                onClick={() => fileInput.current?.click()}
-                className="border-2 border-dashed border-emerald-200 rounded-2xl p-8 text-center cursor-pointer hover:border-emerald-400 hover:bg-emerald-50/50 transition-all"
-              >
-                {uploading ? (
-                  <Loader2
-                    size={28}
-                    className="mx-auto text-emerald-500 animate-spin mb-2"
-                  />
-                ) : (
-                  <Upload size={28} className="mx-auto text-emerald-400 mb-2" />
-                )}
-                <p className="text-[13px] text-gray-600 font-medium">
-                  {uploading ? "正在入库（分块 + embedding）…" : "拖拽或点击上传文档"}
-                </p>
-                <p className="text-[11px] text-gray-400 mt-1">
-                  PDF / DOCX / TXT / MD / Excel / CSV — 支持多选批量入库
-                </p>
-                <input
-                  ref={fileInput}
-                  type="file"
-                  multiple
-                  className="hidden"
-                  accept=".pdf,.docx,.doc,.txt,.md,.markdown,.xlsx,.xls,.csv,.json"
-                  onChange={(e) => {
-                    if (e.target.files?.length) handleUpload(e.target.files);
-                    e.target.value = "";
-                  }}
-                />
-              </div>
-
-              {msg && (
-                <div
-                  className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-[12px] ${
-                    msg.type === "ok"
-                      ? "bg-green-50 text-green-700"
-                      : "bg-red-50 text-red-600"
-                  }`}
-                >
-                  {msg.type === "ok" ? (
-                    <CheckCircle2 size={13} />
-                  ) : (
-                    <AlertCircle size={13} />
+              </h3>
+              {ontologyNodes.length === 0 ? (
+                <div className="text-center py-8">
+                  <Network size={24} style={{ color:"var(--ink-200)", margin:"0 auto 8px" }}/>
+                  <p style={{ fontSize:12, color:"var(--ink-400)" }}>暂无本体节点</p>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {ontologyNodes.slice(0,14).map((node:any) => (
+                    <div key={node.id} className="flex items-center gap-2 px-3 py-1.5 rounded-lg"
+                      style={{ background:"var(--bg-subtle)", fontSize:12 }}>
+                      <CircleDot size={10} style={{ color:"var(--brand)", flexShrink:0, opacity:.7 }}/>
+                      <span className="font-medium truncate" style={{ color:"var(--ink-800)", flex:1 }}>{node.label}</span>
+                      {node.domain && <span style={{ fontSize:10.5, color:"var(--ink-400)" }}>{node.domain}</span>}
+                      {node.importance != null && (
+                        <div style={{ width:28, height:4, borderRadius:99, background:"var(--border)", overflow:"hidden", flexShrink:0 }}>
+                          <div style={{ width:`${(node.importance*100)}%`, height:"100%", background:"var(--brand)", borderRadius:99 }}/>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {ontologyNodes.length > 14 && (
+                    <p style={{ fontSize:11, color:"var(--ink-400)", textAlign:"center", paddingTop:4 }}>
+                      + {ontologyNodes.length - 14} 更多
+                    </p>
                   )}
-                  {msg.text}
                 </div>
               )}
-
-              {/* Document list */}
-              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                <div className="px-4 py-2.5 border-b border-gray-100 bg-gray-50 text-[12px] font-semibold text-gray-600">
-                  文档列表（{docs.length}）
-                </div>
-                {docs.length === 0 ? (
-                  <div className="text-center py-10 text-gray-400">
-                    <FileText size={28} className="mx-auto text-gray-300 mb-2" />
-                    <p className="text-[12px]">该知识库暂无文档，上传后将分块入库</p>
-                  </div>
-                ) : (
-                  <div className="divide-y divide-gray-50">
-                    {docs.map((doc) => (
-                      <div
-                        key={doc.id}
-                        className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 group"
-                      >
-                        <FileText size={15} className="text-gray-400 shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-[13px] text-gray-800 truncate">{doc.title}</p>
-                          <p className="text-[11px] text-gray-400">
-                            {doc.file_type?.toUpperCase()} · {doc.chunk_count || 0} 切片
-                            {doc.status === "error" && (
-                              <span className="text-red-500 ml-1">· 解析失败</span>
-                            )}
-                            {doc.status === "indexed" && (
-                              <span className="text-green-500 ml-1">· 已索引</span>
-                            )}
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => handleDeleteDoc(doc.id)}
-                          className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
             </div>
-          </>
-        ) : (
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-center">
-              <Database size={40} className="mx-auto text-gray-300 mb-3" />
-              <p className="text-[13px] text-gray-400">选择或新建一个知识库</p>
+
+            {/* KB nodes */}
+            <div className="rounded-xl p-4" style={{ border:"1px solid var(--border)", background:"var(--bg-elevated)" }}>
+              <h3 className="flex items-center gap-2 mb-3" style={{ fontSize:13, fontWeight:650, color:"var(--ink-700)" }}>
+                <Database size={13} style={{ color:"var(--ink-400)" }}/>
+                已连接知识库
+                <span style={{ fontSize:10.5, padding:"1px 6px", borderRadius:99, background:"var(--bg-subtle)", color:"var(--ink-400)" }}>
+                  {kbNodes.length}
+                </span>
+              </h3>
+              {kbNodes.length === 0 ? (
+                <div className="text-center py-8">
+                  <Database size={24} style={{ color:"var(--ink-200)", margin:"0 auto 8px" }}/>
+                  <p style={{ fontSize:12, color:"var(--ink-400)" }}>暂无系统知识库</p>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {kbNodes.slice(0,14).map((kb:any) => (
+                    <div key={kb.id} className="flex items-center gap-2 px-3 py-1.5 rounded-lg"
+                      style={{ background:"var(--bg-subtle)", fontSize:12 }}>
+                      <BookOpen size={10} style={{ color:"#0ea5e9", flexShrink:0 }}/>
+                      <span className="font-medium truncate" style={{ color:"var(--ink-800)", flex:1 }}>{kb.label}</span>
+                      <span style={{ fontSize:10.5, color:"var(--ink-400)", fontVariantNumeric:"tabular-nums" }}>
+                        {fmt(kb.chunk_count)} c
+                      </span>
+                    </div>
+                  ))}
+                  {kbNodes.length > 14 && (
+                    <p style={{ fontSize:11, color:"var(--ink-400)", textAlign:"center", paddingTop:4 }}>
+                      + {kbNodes.length - 14} 更多
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
-        )}
-      </div>
-
-      {/* Create modal */}
-      {showCreate && (
-        <CreateKBModal
-          onClose={() => setShowCreate(false)}
-          onCreated={async (kb) => {
-            setShowCreate(false);
-            await loadKBs();
-            setSelectedId(kb.id);
-          }}
-        />
+        </>
       )}
-    </div>
-  );
-}
 
-function CreateKBModal({
-  onClose,
-  onCreated,
-}: {
-  onClose: () => void;
-  onCreated: (kb: KnowledgeBase) => void;
-}) {
-  const [name, setName] = useState("");
-  const [kbType, setKbType] = useState("finance");
-  const [desc, setDesc] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-
-  const submit = async () => {
-    if (!name.trim()) {
-      setErr("请填写知识库名称");
-      return;
-    }
-    setBusy(true);
-    setErr("");
-    try {
-      const kb = await api.createKB(name.trim(), {
-        kb_type: kbType,
-        description: desc.trim(),
-      });
-      onCreated(kb);
-    } catch (e) {
-      setErr(String((e as Error)?.message || e));
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-      onClick={onClose}
-    >
-      <div
-        className="bg-white rounded-2xl w-[440px] p-6 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+      {/* Project ontology editor */}
+      <div style={{ borderTop:"1px solid var(--border)", paddingTop:24 }}>
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-[15px] font-semibold text-gray-900">新建知识库</h3>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600"
-          >
-            <X size={18} />
-          </button>
+          <h3 className="flex items-center gap-2" style={{ fontSize:14, fontWeight:650, color:"var(--ink-700)" }}>
+            <GitBranch size={14} style={{ color:"var(--ink-400)" }}/>
+            项目本体编辑
+          </h3>
+          {projects.length > 0 && (
+            <select value={selProjectId ?? ""}
+              onChange={(e) => {
+                const id = Number(e.target.value);
+                setSelProjectId(id);
+                localStorage.setItem("da_ontology_project_id", String(id));
+              }}
+              className="text-[12px] rounded-lg px-2.5 py-1.5 outline-none"
+              style={{ background:"var(--bg-elevated)", border:"1px solid var(--border)", color:"var(--ink-700)" }}>
+              {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          )}
         </div>
-
-        <label className="block text-[12px] font-medium text-gray-600 mb-1">名称</label>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          autoFocus
-          placeholder="例如：2024 银行业年报库"
-          className="w-full text-[13px] border border-gray-200 rounded-lg px-3 py-2 mb-3 focus:outline-none focus:border-emerald-400"
-        />
-
-        <label className="block text-[12px] font-medium text-gray-600 mb-1.5">
-          领域分类
-        </label>
-        <div className="grid grid-cols-3 gap-1.5 mb-3">
-          {KB_TYPES.map((t) => (
-            <button
-              key={t.value}
-              onClick={() => setKbType(t.value)}
-              className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-[12px] border transition-colors ${
-                kbType === t.value
-                  ? "bg-emerald-50 border-emerald-300 text-emerald-700"
-                  : "border-gray-200 text-gray-600 hover:border-gray-300"
-              }`}
-            >
-              <span>{t.icon}</span> {t.label}
-            </button>
-          ))}
-        </div>
-
-        <label className="block text-[12px] font-medium text-gray-600 mb-1">
-          描述（可选）
-        </label>
-        <textarea
-          value={desc}
-          onChange={(e) => setDesc(e.target.value)}
-          rows={2}
-          placeholder="这个库收录什么内容…"
-          className="w-full text-[13px] border border-gray-200 rounded-lg px-3 py-2 mb-3 resize-none focus:outline-none focus:border-emerald-400"
-        />
-
-        {err && <p className="text-[12px] text-red-500 mb-2">{err}</p>}
-
-        <div className="flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="px-3 py-2 rounded-lg text-[13px] text-gray-600 hover:bg-gray-100"
-          >
-            取消
-          </button>
-          <button
-            onClick={submit}
-            disabled={busy}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500 text-white text-[13px] font-medium hover:bg-emerald-600 disabled:opacity-40"
-          >
-            {busy ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <Plus size={14} />
-            )}{" "}
-            创建
-          </button>
-        </div>
+        <OntologyEditor projectId={selProjectId ?? undefined} defaultToSystem={true} />
       </div>
     </div>
   );

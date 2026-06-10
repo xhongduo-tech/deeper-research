@@ -29,6 +29,7 @@ async def run_unified_pipeline(
     progress_callback: Callable | None = None,
     kb_ids: list[int] | None = None,
     skills: list[str] | None = None,
+    skip_clarify: bool = False,
 ) -> None:
     """Execute the full unified pipeline for a report.
 
@@ -49,6 +50,7 @@ async def run_unified_pipeline(
         uploaded_texts=uploaded_texts,
         kb_ids=kb_ids,
         skills=skills,
+        skip_clarify=skip_clarify,
         progress_callback=progress_callback,
     )
     state = PipelineState()
@@ -93,7 +95,7 @@ async def run_unified_pipeline(
                 pass
 
         # Handle UNDERSTAND clarification pause
-        if phase_name == "UNDERSTAND" and ctx.understanding.get("clarification_needed"):
+        if phase_name == "UNDERSTAND" and ctx.understanding.get("clarification_needed") and not ctx.skip_clarify:
             logger.info("[Pipeline] Pausing for clarifications after UNDERSTAND")
             report.status = "pending"
             report.phase = "等待澄清回复"

@@ -11,7 +11,7 @@
 # 用法:
 #   ./scripts/build_offline.sh              # 全量构建（仅镜像）
 #   ./scripts/build_offline.sh --no-cache   # 强制不缓存重新构建
-#   ./scripts/build_offline.sh --with-data  # 镜像 + 导出已入库的 PostgreSQL + Qdrant 数据
+#   ./scripts/build_offline.sh --with-data  # 镜像 + 导出已入库的 SQLite/PostgreSQL + Qdrant 数据
 #                                   #   （在本机入库完成后用，目标机开箱即用，无需重新下载/embedding）
 
 set -euo pipefail
@@ -37,6 +37,7 @@ PG_CONTAINER="${PG_CONTAINER:-deep-research-postgres-1}"
 PG_USER="${PG_USER:-dataagent}"
 PG_DB="${PG_DB:-dataagent}"
 QDRANT_STORAGE="${QDRANT_STORAGE:-$ROOT_DIR/data/qdrant_storage}"
+SQLITE_DB="${SQLITE_DB:-$ROOT_DIR/data/app.db}"
 
 # ── 依赖检查 ─────────────────────────────────────────────────────────────────
 for cmd in docker; do
@@ -187,14 +188,24 @@ IMAGE_SIZE="$(du -sh "$OUTPUT_DIR/$IMAGE_ARCHIVE" | awk '{print $1}')"
 echo "  镜像包大小: $IMAGE_SIZE"
 
 # ── 导出已入库数据（--with-data）─────────────────────────────────────────────
-# 把本机已入库的 PostgreSQL（pg_dump 逻辑导出，跨架构安全）+ Qdrant 向量存储
-# 一并打包，目标机恢复后开箱即用，无需重新下载 2TB 原始语料、无需重跑 embedding。
+# 把本机已入库的 SQLite/PostgreSQL + Qdrant 向量存储一并打包，
+# 目标机恢复后开箱即用，无需重新下载 2TB 原始语料、无需重跑 embedding。
 if [ "$WITH_DATA" = true ]; then
   echo ""
-  echo "▶ 导出已入库数据（PostgreSQL + Qdrant）…"
+  echo "▶ 导出已入库数据（SQLite/PostgreSQL + Qdrant）…"
   mkdir -p "$OUTPUT_DIR/data_export"
 
-  # 1) PostgreSQL —— 逻辑导出（-Fc 自定义格式，arm64→x86_64 安全）
+  # 1) SQLite —— 直接复制（当前系统主数据库为 SQLite）
+  if [ -f "$SQLITE_DB" ]; then
+    echo "  → 复制 SQLite 数据库…"
+    cp "$SQLITE_DB" "$OUTPUT_DIR/data_export/app.db"
+    SQLITE_SIZE="$(du -sh "$OUTPUT_DIR/data_export/app.db" | awk '{print $1}')"
+    echo "    ✓ app.db ($SQLITE_SIZE)"
+  else
+    echo "  ⚠ 未找到 SQLite 数据库 ($SQLITE_DB)，跳过。"
+  fi
+
+  # 2) PostgreSQL —— 逻辑导出（-Fc 自定义格式，arm64→x86_64 安全）
   if docker ps --format '{{.Names}}' | grep -q "^${PG_CONTAINER}$"; then
     echo "  → pg_dump ${PG_DB}…"
     docker exec "$PG_CONTAINER" pg_dump -U "$PG_USER" -Fc "$PG_DB" \
@@ -203,10 +214,9 @@ if [ "$WITH_DATA" = true ]; then
     echo "    ✓ postgres.dump ($PG_SIZE)"
   else
     echo "  ⚠ 未发现运行中的 PostgreSQL 容器 ($PG_CONTAINER)，跳过 PG 导出。"
-    echo "    先启动并入库: docker compose up -d postgres && python -m app.services.bulk_importer --source data/kb_sources"
   fi
 
-  # 2) Qdrant —— 直接打包存储目录（Qdrant 存储格式跨架构兼容）
+  # 3) Qdrant —— 直接打包存储目录（Qdrant 存储格式跨架构兼容）
   if [ -d "$QDRANT_STORAGE" ] && [ -n "$(ls -A "$QDRANT_STORAGE" 2>/dev/null)" ]; then
     echo "  → 打包 Qdrant 向量存储…"
     tar czf "$OUTPUT_DIR/data_export/qdrant_storage.tar.gz" \
@@ -217,7 +227,7 @@ if [ "$WITH_DATA" = true ]; then
     echo "  ⚠ Qdrant 存储为空 ($QDRANT_STORAGE)，跳过。先完成 bulk_importer 入库。"
   fi
 
-  # 3) 用户自定义技能（持久化在文件系统）
+  # 4) 用户自定义技能（持久化在文件系统）
   if [ -d "$ROOT_DIR/data/db/user_skills" ]; then
     tar czf "$OUTPUT_DIR/data_export/user_skills.tar.gz" -C "$ROOT_DIR/data/db" user_skills 2>/dev/null || true
     echo "    ✓ user_skills.tar.gz"
@@ -391,6 +401,14 @@ fi
 
 if [ -f data_export/user_skills.tar.gz ]; then
   tar xzf data_export/user_skills.tar.gz -C data/db/ 2>/dev/null || true
+fi
+
+# ── 恢复 SQLite 数据库（容器启动前）────────────────────────────────────────────
+if [ -f data_export/app.db ]; then
+  echo "▶ 恢复 SQLite 数据库…"
+  cp data_export/app.db data/app.db
+  chmod 666 data/app.db
+  echo "  ✓ SQLite 数据已就位"
 fi
 
 # ── 启动服务 ─────────────────────────────────────────────────────────────────
@@ -607,7 +625,8 @@ DataAgent Studio — 内网离线部署说明
     ./deploy_offline.sh --update
 
 【数据目录说明】
-  data/pg_data/         PostgreSQL 主数据库（报告、用户、知识库元数据 + chunk）
+  data/app.db           SQLite 主数据库（报告、用户、知识库元数据 + chunk）
+  data/pg_data/         PostgreSQL 主数据库（如使用 PG 模式）
   data/qdrant_storage/  Qdrant 向量库（RAG 向量索引）
   data/uploads/         用户上传的文件（PDF、Word、Excel）
   data/templates/       PPT 模板文件
@@ -617,8 +636,9 @@ DataAgent Studio — 内网离线部署说明
 
 【已入库数据恢复（--with-data 打包时）】
   若 offline-images/data_export/ 存在，deploy_offline.sh 首次部署会自动：
+    • 复制 app.db → data/app.db（SQLite 主数据库，含用户/知识库/本体数据）
     • 解压 qdrant_storage.tar.gz → data/qdrant_storage/（容器启动前）
-    • pg_restore postgres.dump → PostgreSQL（postgres 健康后，仅当库为空）
+    • pg_restore postgres.dump → PostgreSQL（如使用 PG 模式，仅当库为空）
   这样目标机开箱即用，无需重新下载 2TB 语料、无需重跑 embedding。
 
 【备份】

@@ -20,6 +20,7 @@ class ReportCreate(BaseModel):
     skills: List[str] = Field(default_factory=list)
     model_id: Optional[str] = None
     effort: str = "low"
+    project_id: Optional[int] = None
 
 
 class ClarificationAnswer(BaseModel):
@@ -138,6 +139,7 @@ class ReportResponse(BaseModel):
     timeline: List[TimelineEventResponse] = Field(default_factory=list)
     findings: List[FindingResponse] = Field(default_factory=list)
     verifications: List[VerificationResultResponse] = Field(default_factory=list)
+    project_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     started_at: Optional[datetime] = None
@@ -153,6 +155,7 @@ class ReportListResponse(BaseModel):
     status: str
     progress: float
     phase: str
+    project_id: Optional[int] = None
     created_at: datetime
     completed_at: Optional[datetime] = None
 

@@ -500,12 +500,13 @@ async def create_new_report(
 @router.get("", response_model=dict)
 async def list_user_reports(
     status_filter: str | None = None,
+    project_id: int | None = None,
     limit: int = 20,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    reports, total = await list_reports(db, current_user.id, status_filter, limit, offset)
+    reports, total = await list_reports(db, current_user.id, status_filter, project_id, limit, offset)
     return {
         "reports": [_report_list_item(r) for r in reports],
         "total": total,
@@ -1230,6 +1231,7 @@ def _report_to_response(report) -> dict:
             }
             for t in timeline
         ],
+        "project_id": report.project_id,
         "created_at": report.created_at.isoformat() if report.created_at else None,
         "updated_at": report.updated_at.isoformat() if report.updated_at else None,
         "started_at": report.started_at.isoformat() if report.started_at else None,
@@ -1301,6 +1303,7 @@ def _report_list_item(report) -> dict:
         "status": report.status,
         "progress": report.progress,
         "phase": report.phase,
+        "project_id": report.project_id,
         "created_at": report.created_at.isoformat() if report.created_at else None,
         "completed_at": report.completed_at.isoformat() if report.completed_at else None,
     }

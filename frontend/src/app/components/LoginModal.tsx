@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { X, Eye, EyeOff, Lock, User, Building2, Key, UserCircle } from "lucide-react";
+import { X, Eye, EyeOff, Lock, User, Building2, UserCircle } from "lucide-react";
 import logoImg from "../../imports/deep-research.png";
 import { ImageWithFallback } from "./figma/ImageWithFallback";
 
@@ -15,6 +15,7 @@ export function LoginModal({
   onClose,
   onLogin,
   onRegister,
+  onRecover,
   initialTab = "login",
 }: {
   onClose: () => void;
@@ -24,6 +25,12 @@ export function LoginModal({
     username: string;
     department: string;
     password: string;
+  }) => Promise<void>;
+  onRecover: (payload: {
+    auth_id: string;
+    username: string;
+    department: string;
+    new_password: string;
   }) => Promise<void>;
   initialTab?: Tab;
 }) {
@@ -70,6 +77,36 @@ export function LoginModal({
       await onRegister({ auth_id: authId, username, department, password });
     } catch (err) {
       setError(err instanceof Error ? err.message : "注册失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitRecover = async (payload: {
+    auth_id: string;
+    username: string;
+    department: string;
+    newPassword: string;
+    confirmPassword: string;
+  }) => {
+    const authId = payload.auth_id.trim();
+    const username = payload.username.trim();
+    const department = payload.department.trim();
+    const newPassword = payload.newPassword;
+    if (!authId || !username || !department || !newPassword) {
+      setError("请完整填写统一认证号、姓名、所属部门和新密码");
+      return;
+    }
+    if (newPassword !== payload.confirmPassword) {
+      setError("两次输入的新密码不一致");
+      return;
+    }
+    setError("");
+    setBusy(true);
+    try {
+      await onRecover({ auth_id: authId, username, department, new_password: newPassword });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "找回密码失败");
     } finally {
       setBusy(false);
     }
@@ -152,7 +189,7 @@ export function LoginModal({
         <div className="px-6 pb-6 flex flex-col gap-3">
           {tab === "login" && <LoginForm onLogin={submitLogin} showPwd={showPwd} setShowPwd={setShowPwd} busy={busy} />}
           {tab === "register" && <RegisterForm onRegister={submitRegister} showPwd={showPwd} setShowPwd={setShowPwd} showPwd2={showPwd2} setShowPwd2={setShowPwd2} busy={busy} />}
-          {tab === "forgot" && <ForgotForm onLogin={submitLogin} busy={busy} />}
+          {tab === "forgot" && <ForgotForm onRecover={submitRecover} showPwd={showPwd} setShowPwd={setShowPwd} showPwd2={showPwd2} setShowPwd2={setShowPwd2} busy={busy} />}
 
           {error && (
             <div className="rounded-xl px-3 py-2 text-[12.5px]" style={{ color: "#dc2626", background: "#fee2e2" }}>
@@ -269,21 +306,46 @@ function RegisterForm({ onRegister, showPwd, setShowPwd, showPwd2, setShowPwd2, 
 }
 
 /* ── Forgot ── */
-function ForgotForm({ onLogin, busy }: { onLogin: (authId: string, password: string) => void; busy: boolean }) {
-  const [showPwd, setShowPwd] = useState(false);
+function ForgotForm({ onRecover, showPwd, setShowPwd, showPwd2, setShowPwd2, busy }: {
+  onRecover: (payload: {
+    auth_id: string;
+    username: string;
+    department: string;
+    newPassword: string;
+    confirmPassword: string;
+  }) => void;
+  showPwd: boolean; setShowPwd: (v: boolean) => void;
+  showPwd2: boolean; setShowPwd2: (v: boolean) => void;
+  busy: boolean;
+}) {
   const [authId, setAuthId] = useState("");
-  const [password, setPassword] = useState("");
+  const [username, setUsername] = useState("");
+  const [department, setDepartment] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   return (
     <>
       <Field icon={<User className="h-4 w-4" />} placeholder="统一认证号" type="text" value={authId} onChange={setAuthId} />
-      <Field icon={<Key className="h-4 w-4" />} placeholder="管理员提供的验证码" type="text" />
+      <Field icon={<UserCircle className="h-4 w-4" />} placeholder="姓名" type="text" value={username} onChange={setUsername} />
+      <Field icon={<Building2 className="h-4 w-4" />} placeholder="所属部门" type="text" value={department} onChange={setDepartment} />
       <div className="relative">
-        <Field icon={<Lock className="h-4 w-4" />} placeholder="新密码" type={showPwd ? "text" : "password"} value={password} onChange={setPassword} />
+        <Field icon={<Lock className="h-4 w-4" />} placeholder="新密码" type={showPwd ? "text" : "password"} value={newPassword} onChange={setNewPassword} />
         <button type="button" onClick={() => setShowPwd(!showPwd)} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: "var(--ink-400)" }}>
           {showPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
         </button>
       </div>
-      <PrimaryBtn onClick={() => onLogin(authId, password)} disabled={busy || !authId || !password}>重置密码</PrimaryBtn>
+      <div className="relative">
+        <Field icon={<Lock className="h-4 w-4" />} placeholder="确认新密码" type={showPwd2 ? "text" : "password"} value={confirmPassword} onChange={setConfirmPassword} />
+        <button type="button" onClick={() => setShowPwd2(!showPwd2)} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: "var(--ink-400)" }}>
+          {showPwd2 ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+        </button>
+      </div>
+      <PrimaryBtn
+        onClick={() => onRecover({ auth_id: authId, username, department, newPassword, confirmPassword })}
+        disabled={busy || !authId || !username || !department || !newPassword || !confirmPassword}
+      >
+        {busy ? "重置中..." : "重置并登录"}
+      </PrimaryBtn>
     </>
   );
 }

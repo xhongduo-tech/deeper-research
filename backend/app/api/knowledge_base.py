@@ -2,13 +2,15 @@
 import logging
 import tempfile
 import os
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Query
 from pydantic import BaseModel
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth_middleware import get_current_user
 from app.models.user import User
+from app.models.knowledge_base import KnowledgeBase, KBDocument
 from app.services import rag_service
 from app.services.file_parser import extract_text
 
@@ -29,6 +31,78 @@ class KBSearchRequest(BaseModel):
     query: str
     top_k: int = 8
     score_threshold: float = 0.15
+
+
+# ── Public system KB listing (no auth required) ────────────────────────────
+
+@router.get("/system")
+async def list_system_kbs(
+    kb_type: str | None = Query(None, description="Filter by kb_type"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return all corp-scope (system) knowledge bases with real-time doc/size stats.
+    Public endpoint — no authentication required.
+    """
+    stmt = (
+        select(
+            KnowledgeBase.id,
+            KnowledgeBase.name,
+            KnowledgeBase.description,
+            KnowledgeBase.kb_type,
+            KnowledgeBase.embed_model,
+            KnowledgeBase.created_at,
+            # real-time doc count
+            func.count(KBDocument.id).label("real_doc_count"),
+            # real-time total size
+            func.coalesce(func.sum(KBDocument.file_size), 0).label("real_total_size"),
+        )
+        .outerjoin(KBDocument, KBDocument.kb_id == KnowledgeBase.id)
+        .where(KnowledgeBase.scope == "corp")
+        .group_by(KnowledgeBase.id)
+        .order_by(func.count(KBDocument.id).desc())
+    )
+    if kb_type:
+        stmt = stmt.where(KnowledgeBase.kb_type == kb_type)
+
+    rows = (await db.execute(stmt)).all()
+
+    type_labels = {
+        "general": "通用", "policy": "政策法规", "research": "研究报告",
+        "finance": "金融数据", "tech": "技术文档", "news": "新闻舆情",
+        "academic": "学术论文", "code": "代码工程", "math": "数学知识",
+        "statistics": "统计数据", "law": "法律法规", "trade": "贸易数据",
+        "gov": "政府报告", "banking": "银行年报", "meeting": "会议纪要",
+    }
+
+    items = []
+    for r in rows:
+        size_mb = round((r.real_total_size or 0) / 1024 / 1024, 1)
+        items.append({
+            "id": r.id,
+            "name": r.name,
+            "description": r.description or "",
+            "scope": "corp",
+            "kb_type": r.kb_type or "general",
+            "type_label": type_labels.get(r.kb_type or "general", r.kb_type or "general"),
+            "doc_count": r.real_doc_count,
+            "chunk_count": 0,          # vectors in Qdrant, not SQLite
+            "total_size": r.real_total_size or 0,
+            "size_display": f"{size_mb} MB" if size_mb >= 0.1 else f"{r.real_total_size or 0} B",
+            "embed_model": r.embed_model or "",
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        })
+
+    total_docs = sum(i["doc_count"] for i in items)
+    total_size = sum(i["total_size"] for i in items)
+
+    return {
+        "items": items,
+        "total": len(items),
+        "total_docs": total_docs,
+        "total_size": total_size,
+        "size_display": f"{round(total_size / 1024 / 1024, 1)} MB",
+    }
 
 
 # ── KB CRUD ────────────────────────────────────────────────────────────────
@@ -225,6 +299,43 @@ async def delete_document(
     if not ok:
         raise HTTPException(status_code=404, detail="文档不存在")
     return {"message": "已删除"}
+
+
+# ── Structured Data Query ──────────────────────────────────────────────────
+
+class KBQueryRequest(BaseModel):
+    query: str
+    nl: bool = True   # True = 自然语言，False = 直接 SQL
+
+
+@router.post("/{kb_id}/query")
+async def query_kb_structured(
+    kb_id: int,
+    req: KBQueryRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """对知识库中的结构化数据表执行查询（自然语言 → SQL 或直接 SQL）."""
+    from app.models.knowledge_base import KnowledgeBase
+    from app.services.structured_data_service import get_structured_data_service
+
+    kb = await db.get(KnowledgeBase, kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="知识库不存在")
+    if kb.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="无权访问该知识库")
+
+    sds = get_structured_data_service()
+
+    if req.nl:
+        result = await sds.nl_query(str(kb_id), req.query)
+        return result
+    else:
+        try:
+            rows = sds.execute_query(str(kb_id), req.query)
+            return {"success": True, "sql": req.query, "rows": rows, "row_count": len(rows)}
+        except Exception as e:
+            return {"success": False, "error": str(e), "sql": req.query}
 
 
 # ── Search ─────────────────────────────────────────────────────────────────

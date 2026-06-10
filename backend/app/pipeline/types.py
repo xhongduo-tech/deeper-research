@@ -57,6 +57,7 @@ class PipelineContext:
         uploaded_texts: list[str] | None = None,
         kb_ids: list[int] | None = None,
         skills: list[str] | None = None,
+        skip_clarify: bool = False,
         progress_callback: Callable | None = None,
     ):
         self.report = report
@@ -64,6 +65,7 @@ class PipelineContext:
         self.uploaded_texts = uploaded_texts or []
         self.kb_ids = kb_ids or []
         self.skills = skills or []
+        self.skip_clarify = skip_clarify
         self.progress_callback = progress_callback
 
         # Populated by phases as they run
@@ -109,9 +111,10 @@ class PipelineContext:
         uploaded_texts: list[str] | None = None,
         kb_ids: list[int] | None = None,
         skills: list[str] | None = None,
+        skip_clarify: bool = False,
         progress_callback: Callable | None = None,
     ) -> "PipelineContext":
-        ctx = cls(report, db, uploaded_texts, kb_ids, skills, progress_callback)
+        ctx = cls(report, db, uploaded_texts, kb_ids, skills, skip_clarify, progress_callback)
         return ctx
 
 

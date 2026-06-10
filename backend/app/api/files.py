@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.config import settings
 from app.database import get_db
@@ -90,3 +91,30 @@ async def list_files(
             for f in files
         ]
     }
+
+
+@router.delete("/{file_id}")
+async def delete_file(
+    file_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(UploadedFileModel).where(
+            UploadedFileModel.id == file_id,
+            UploadedFileModel.user_id == current_user.id,
+        )
+    )
+    db_file = result.scalar_one_or_none()
+    if not db_file:
+        raise HTTPException(status_code=404, detail="文件不存在或无权删除")
+
+    try:
+        if db_file.file_path and os.path.exists(db_file.file_path):
+            os.remove(db_file.file_path)
+    except OSError:
+        pass
+
+    await db.delete(db_file)
+    await db.commit()
+    return {"message": "文件已删除", "id": file_id}

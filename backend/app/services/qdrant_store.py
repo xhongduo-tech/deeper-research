@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 import numpy as np
 
@@ -42,10 +43,14 @@ class QdrantStore:
         if not _QDRANT_AVAILABLE:
             raise ImportError("qdrant-client is not installed. Run: pip install qdrant-client")
 
+        # Parse host from qdrant_url; gRPC avoids httpx 502 issues with actix-web
+        parsed = urlparse(settings.qdrant_url)
+        host = parsed.hostname or "localhost"
         self.client: QdrantClient = QdrantClient(
-            url=settings.qdrant_url,
+            host=host,
+            grpc_port=6334,
+            prefer_grpc=True,
             api_key=settings.qdrant_api_key or None,
-            prefer_grpc=False,  # HTTP is simpler for air-gapped
         )
         self._collection_ensured = False
 

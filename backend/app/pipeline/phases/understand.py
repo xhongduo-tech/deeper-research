@@ -203,7 +203,7 @@ class UnderstandPhase:
 
         clarification_needed = _coerce_bool(result.get("clarification_needed"), False)
         # Force clarification on low-confidence intent
-        if intent_confidence < 0.7 and not clarification_needed:
+        if intent_confidence < 0.7 and not clarification_needed and not getattr(ctx, "skip_clarify", False):
             clarification_needed = True
             result.setdefault("clarification_questions", [])
             result["clarification_questions"].append({
@@ -211,6 +211,9 @@ class UnderstandPhase:
                 "default_answer": "是，请基于参考文档生成",
                 "priority": "high",
             })
+        if getattr(ctx, "skip_clarify", False):
+            clarification_needed = False
+            result["clarification_questions"] = []
 
         understanding = {
             "topic": str(result.get("topic", brief[:50])),

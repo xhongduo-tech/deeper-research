@@ -20,7 +20,7 @@ const SLIDES = [
   {
     emoji: "🗄️",
     color: "#7c3aed",
-    title: "私有知识库",
+    title: "私有数据库",
     subtitle: "让 AI 读懂你的内部文档",
     desc: "上传 PDF、Word、Excel 等内部文件，AI 向量化后作为研究的第一手资料，检索精准，不出内网。",
   },

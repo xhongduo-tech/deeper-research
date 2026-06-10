@@ -108,20 +108,20 @@ async def register_user(db: AsyncSession, auth_id: str, username: str, departmen
 
 
 async def recover_password(db: AsyncSession, auth_id: str, username: str,
-                           department: str, scene: str) -> str:
+                           department: str, scene: str = "frontend",
+                           new_password: str | None = None) -> str:
     result = await db.execute(select(User).where(
         User.auth_id == auth_id,
         User.username == username,
         User.department == department,
-        User.scene == scene,
     ))
     user = result.scalar_one_or_none()
     if not user:
         raise ValueError("验证信息不匹配，无法找回密码")
-    new_password = secrets.token_urlsafe(8)
-    user.hashed_password = hash_password(new_password)
+    password = new_password or secrets.token_urlsafe(8)
+    user.hashed_password = hash_password(password)
     await db.commit()
-    return new_password
+    return password
 
 
 async def ensure_admin_user(db: AsyncSession) -> None:

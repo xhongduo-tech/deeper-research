@@ -34,6 +34,7 @@ async def create_report(db: AsyncSession, user_id: int, data: dict) -> Report:
     )
     report = Report(
         user_id=user_id,
+        project_id=data.get("project_id"),
         title=normalized_title,
         brief=data["brief"],
         report_type=data.get("report_type", "经营分析"),
@@ -137,6 +138,7 @@ async def _run_pipeline_with_session(db: AsyncSession, report: Report, data: dic
     if not uploaded_texts:
         uploaded_texts = await _load_report_uploaded_texts(db, report)
     skip_clarify = data.get("skip_clarify", False)
+    report._skip_clarify = bool(skip_clarify)
 
     # Progress broadcaster (used by both pipeline modes)
     async def _progress(data: dict):
@@ -242,6 +244,7 @@ async def _run_unified(
         progress_callback=progress_callback,
         kb_ids=kb_ids,
         skills=skills,
+        skip_clarify=bool(getattr(report, "_skip_clarify", False)),
     )
 
 
@@ -351,14 +354,25 @@ async def get_report_detail(db: AsyncSession, report_id: int) -> Report | None:
 
 async def list_reports(db: AsyncSession, user_id: int,
                        status: str | None = None,
+                       project_id: int | None = None,
                        limit: int = 20, offset: int = 0) -> tuple[list[Report], int]:
-    """List reports for a user."""
+    """List reports for a user, optionally filtered by project."""
     query = select(Report).where(Report.user_id == user_id)
     count_query = select(func.count(Report.id)).where(Report.user_id == user_id)
 
     if status:
         query = query.where(Report.status == status)
         count_query = count_query.where(Report.status == status)
+
+    if project_id is not None:
+        if project_id == 0:
+            # project_id=0 means "no project" (general conversations)
+            query = query.where(Report.project_id.is_(None))
+            count_query = count_query.where(Report.project_id.is_(None))
+        else:
+            query = query.where(Report.project_id == project_id)
+            count_query = count_query.where(Report.project_id == project_id)
+    # When project_id is None, return all reports (no filter)
 
     query = query.order_by(Report.created_at.desc()).offset(offset).limit(limit)
 

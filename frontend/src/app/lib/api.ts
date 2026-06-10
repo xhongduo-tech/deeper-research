@@ -17,6 +17,7 @@ export type ReportItem = {
   phase?: string;
   created_at?: string;
   completed_at?: string | null;
+  project_id?: number | null;
 };
 
 export type ReportDetail = ReportItem & {
@@ -53,6 +54,11 @@ export type ReportPreview = {
   warning?: string;
 };
 
+export type RagSource = {
+  source: string;
+  snippet: string;
+};
+
 export type ChatMessage = {
   id: number | string;
   report_id?: number;
@@ -64,6 +70,10 @@ export type ChatMessage = {
   streaming?: boolean;
   /** Files the user attached when sending this message (display only, not persisted). */
   attachedFiles?: { name: string; size: string }[];
+  /** RAG sources that grounded this answer (populated on assistant messages). */
+  sources?: RagSource[];
+  /** Ontology domain detected for this query (e.g. "business_research"). */
+  intent_domain?: string | null;
 };
 
 export type CodeExecuteResult = {
@@ -98,6 +108,17 @@ export type UploadedFileRecord = {
   report_id?: number | null;
   is_template?: boolean;
   created_at?: string | null;
+};
+
+export type PromptSkillSummary = {
+  name: string;
+  title?: string;
+  description?: string;
+  owner?: string;
+  purpose?: string;
+  source?: "official" | "user" | string;
+  custom?: boolean;
+  detected_style?: string;
 };
 
 export type KnowledgeBase = {
@@ -143,6 +164,22 @@ export type OfficialDataSource = {
   sample_queries?: string[];
   coverage?: string;
   doc_count?: number;
+  // offline / ingestion metadata
+  source_type?: string;
+  offline_available?: boolean;
+  offline_doc_count?: number;
+  requires_api_key?: boolean;
+  last_synced_at?: string | null;
+};
+
+export type Project = {
+  id: number;
+  name: string;
+  description?: string;
+  status?: string;
+  owner_id?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 export type ModelDisplayConfig = {
@@ -187,7 +224,8 @@ export type DashboardMetrics = {
 };
 
 const API_BASE = resolveApiBase();
-const safeStorage = {
+const REQUEST_TIMEOUT_MS = 15000;
+export const safeStorage = {
   get(key: string) {
     try {
       return localStorage.getItem(key);
@@ -246,7 +284,19 @@ class DataAgentApi {
     };
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
 
-    const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE}${path}`, { ...options, headers, signal: controller.signal });
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw new Error("后端服务无响应，请确认 127.0.0.1:8000 已启动且数据库连接正常");
+      }
+      throw err;
+    } finally {
+      window.clearTimeout(timeout);
+    }
     if (res.status === 401) {
       // Auth/login endpoints: show the actual backend error (wrong credentials, etc.)
       // Other protected endpoints: token expired / session ended
@@ -293,7 +343,7 @@ class DataAgentApi {
     });
   }
 
-  async recover(payload: { auth_id: string; username: string; department: string; scene?: string }) {
+  async recover(payload: { auth_id: string; username: string; department: string; scene?: string; new_password?: string }) {
     return this.request<{ message: string; new_password?: string }>("/api/auth/recover", {
       method: "POST",
       body: JSON.stringify({ scene: "frontend", ...payload }),
@@ -396,8 +446,11 @@ class DataAgentApi {
     return this.request<T>(path, { method: "POST", body: JSON.stringify(body) });
   }
 
-  async listReports(status?: string) {
-    const qs = status ? `?status_filter=${encodeURIComponent(status)}` : "";
+  async listReports(status?: string, projectId?: number | null) {
+    const params = new URLSearchParams();
+    if (status) params.set("status_filter", status);
+    if (projectId != null) params.set("project_id", String(projectId));
+    const qs = params.toString() ? `?${params.toString()}` : "";
     return this.request<{ reports: ReportItem[]; total: number }>(`/api/reports${qs}`);
   }
 
@@ -421,6 +474,7 @@ class DataAgentApi {
     skills?: string[];
     skip_clarify?: boolean;
     strict_facts?: boolean;
+    project_id?: number | null;
   }) {
     return this.request<ReportItem>("/api/reports", {
       method: "POST",
@@ -464,8 +518,9 @@ class DataAgentApi {
     uploaded_files?: number[];
     kb_ids?: number[];
     include_system_kb?: boolean;
+    project_id?: number | null;
   }) {
-    return this.request<{ report_id: number; answer: string; messages: ChatMessage[] }>("/api/chat", {
+    return this.request<{ report_id: number; answer: string; messages: ChatMessage[]; sources?: RagSource[]; intent_domain?: string | null }>("/api/chat", {
       method: "POST",
       body: JSON.stringify({
         uploaded_files: [],
@@ -481,7 +536,7 @@ class DataAgentApi {
     model_id?: string;
     effort?: string;
   }) {
-    return this.request<{ report_id: number; answer: string; messages: ChatMessage[] }>("/api/chat/regenerate", {
+    return this.request<{ report_id: number; answer: string; messages: ChatMessage[]; sources?: RagSource[]; intent_domain?: string | null }>("/api/chat/regenerate", {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -501,7 +556,7 @@ class DataAgentApi {
       onStart?: (reportId: number) => void;
       onDelta?: (delta: string) => void;
       /** Called when the server signals completion. messages are fetched separately. */
-      onDone?: (data: { report_id: number; answer: string }) => void;
+      onDone?: (data: { report_id: number; answer: string; sources?: RagSource[]; intent_domain?: string | null }) => void;
       onError?: (message: string) => void;
     } = {},
   ) {
@@ -547,7 +602,12 @@ class DataAgentApi {
       if (event.type === "delta") handlers.onDelta?.(event.delta || "");
       if (event.type === "done") {
         sawDone = true;
-        handlers.onDone?.({ report_id: event.report_id, answer: event.answer || "" });
+        handlers.onDone?.({
+          report_id: event.report_id,
+          answer: event.answer || "",
+          sources: event.sources,
+          intent_domain: event.intent_domain,
+        });
       }
       if (event.type === "error") {
         handlers.onError?.(event.detail || "模型调用失败");
@@ -613,6 +673,20 @@ class DataAgentApi {
     return this.request<{ files: UploadedFileRecord[] }>(`/api/files${qs}`);
   }
 
+  async deleteFile(fileId: number) {
+    return this.request<{ message: string; id: number }>(`/api/files/${fileId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async listPromptSkills() {
+    return this.request<{ skills: PromptSkillSummary[] }>("/api/prompt-skills");
+  }
+
+  async getPromptSkill(name: string) {
+    return this.request<PromptSkillSummary & { content: string; path?: string }>(`/api/prompt-skills/${encodeURIComponent(name)}`);
+  }
+
   async analyzePromptSkill(file: File) {
     const form = new FormData();
     form.append("file", file);
@@ -637,6 +711,12 @@ class DataAgentApi {
     return this.request<{ message: string; name: string; path?: string; source?: string }>(`/api/prompt-skills/${encodeURIComponent(name)}`, {
       method: "PUT",
       body: JSON.stringify({ content }),
+    });
+  }
+
+  async deletePromptSkill(name: string) {
+    return this.request<{ message: string; name: string }>(`/api/prompt-skills/${encodeURIComponent(name)}`, {
+      method: "DELETE",
     });
   }
 
@@ -685,6 +765,37 @@ class DataAgentApi {
     }>("/api/dashboard/kb-coverage/network");
   }
 
+  /** List knowledge bases with optional scope filter. scope="corp" → system KBs. */
+  async listKBsByScope(scope: "corp" | "personal" | "dept" | "team" | "all" = "corp") {
+    return this.request<{ items: KnowledgeBase[]; total: number }>(`/api/kb?scope=${scope}`);
+  }
+
+  /** Get ontology graph with real KB connections (nodes + edges from OntologyNode + corp KBs). */
+  async getOntologyDataGraph() {
+    return this.request<{
+      nodes: Array<{
+        id: string; label: string; type: "ontology_domain" | "knowledge_base";
+        domain?: string; importance?: number;
+        kb_type?: string; doc_count?: number; chunk_count?: number;
+      }>;
+      edges: Array<{ source: string; target: string; relation: string; strength: number }>;
+      kb_count: number;
+      ontology_count: number;
+    }>("/api/ontology/graph/data-kb");
+  }
+
+  /** Public: list all corp-scope (system) KBs with real doc counts. No auth required. */
+  async listSystemKBs(kbType?: string) {
+    const qs = kbType ? `?kb_type=${encodeURIComponent(kbType)}` : "";
+    return this.request<{
+      items: Array<KnowledgeBase & { type_label: string }>;
+      total: number;
+      total_docs: number;
+      total_size: number;
+      size_display: string;
+    }>(`/api/kb/system${qs}`);
+  }
+
   async searchKBsMulti(query: string, kbIds: number[], includeSystem = false) {
     return this.request<{
       query: string;
@@ -728,6 +839,111 @@ class DataAgentApi {
 
   async deleteKBDocument(kbId: number, docId: number) {
     return this.request<{ message: string }>(`/api/kb/${kbId}/documents/${docId}`, { method: "DELETE" });
+  }
+
+  async queryKBStructured(kbId: number, query: string, nl = true) {
+    return this.request<{
+      success: boolean;
+      sql?: string;
+      rows?: Record<string, unknown>[];
+      row_count?: number;
+      error?: string;
+    }>(`/api/kb/${kbId}/query`, {
+      method: "POST",
+      body: JSON.stringify({ query, nl }),
+    });
+  }
+
+  // ── Projects ───────────────────────────────────────────────────────────────
+
+  async listProjects() {
+    return this.request<{ items: Project[]; total: number }>("/api/projects");
+  }
+
+  async createProject(name: string, description = "") {
+    return this.request<Project>("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({ name, description }),
+    });
+  }
+
+  async getProject(projectId: number) {
+    return this.request<Project & { knowledge_bases: KnowledgeBase[] }>(`/api/projects/${projectId}`);
+  }
+
+  async updateProject(projectId: number, data: { name?: string; description?: string; status?: string }) {
+    return this.request<Project>(`/api/projects/${projectId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteProject(projectId: number) {
+    return this.request<{ ok: boolean }>(`/api/projects/${projectId}`, { method: "DELETE" });
+  }
+
+  async listProjectKBs(projectId: number) {
+    return this.request<{ items: KnowledgeBase[]; total: number }>(`/api/projects/${projectId}/kbs`);
+  }
+
+  async createProjectKB(projectId: number, name: string, description = "") {
+    return this.request<KnowledgeBase & { project_id?: number }>(`/api/projects/${projectId}/kbs`, {
+      method: "POST",
+      body: JSON.stringify({ name, description }),
+    });
+  }
+
+  // ── Ontology ───────────────────────────────────────────────────────────────
+
+  async getOntologyGraph(kbId?: number, reportId?: number) {
+    const params = new URLSearchParams();
+    if (kbId != null) params.set("kb_id", String(kbId));
+    if (reportId != null) params.set("report_id", String(reportId));
+    const qs = params.toString();
+    return this.request<{
+      nodes: Array<{
+        id: number;
+        name: string;
+        node_type: string;
+        domain: string;
+        description?: string;
+        importance?: number;
+        aliases?: string[];
+      }>;
+      edges: Array<{
+        id: number;
+        source: number;
+        target: number;
+        relation_type: string;
+        relation_label?: string;
+        weight?: number;
+        confidence?: number;
+      }>;
+    }>(`/api/ontology/graph${qs ? "?" + qs : ""}`);
+  }
+
+  async extractOntologyFromKB(kbId: number, domain = "general") {
+    return this.request<{
+      kb_id: number;
+      chunks_processed: number;
+      kg: { nodes: unknown[]; edges: unknown[] };
+      node_count: number;
+      edge_count: number;
+    }>(`/api/ontology/extract-kb/${kbId}?domain=${encodeURIComponent(domain)}`, { method: "POST" });
+  }
+
+  async extractOntologyFromText(text: string, domain = "general", context = "") {
+    return this.request<{
+      kg: { nodes: unknown[]; edges: unknown[] };
+      saved: boolean;
+      node_count: number;
+      edge_count: number;
+      persisted_nodes: number;
+      persisted_edges: number;
+    }>("/api/ontology/extract", {
+      method: "POST",
+      body: JSON.stringify({ text, domain, context, save: false }),
+    });
   }
 
   // ── Admin: offline bulk import (2TB lane) ──────────────────────────────────

@@ -8,6 +8,7 @@ from app.models.clarification import Clarification
 from app.models.timeline_event import TimelineEvent
 from app.models.uploaded_file import UploadedFile
 from app.models.evidence import Evidence
+from app.models.project import Project
 from app.models.knowledge_base import KnowledgeBase, KBDocument, KBChunk
 from app.models.ontology import OntologyNode, OntologyEdge, DomainSchema
 from app.models.sentiment import SentimentRecord, OpinionProfile

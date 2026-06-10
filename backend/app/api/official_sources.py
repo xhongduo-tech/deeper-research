@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.middleware.auth_middleware import get_current_user, get_current_admin
+from app.middleware.auth_middleware import get_current_user, get_current_admin, get_optional_user
 from app.models.official_datasource import OfficialDataSource
 from app.models.user import User
 
@@ -62,7 +62,7 @@ async def list_official_sources(
     category: str | None = Query(None, description="Filter by category"),
     active_only: bool = Query(False, description="Only return active sources"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_optional_user),
 ):
     """Return all registered official data sources."""
     stmt = select(OfficialDataSource).order_by(OfficialDataSource.category, OfficialDataSource.name)
@@ -94,7 +94,7 @@ async def list_official_sources(
 async def get_source_detail(
     key: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_optional_user),
 ):
     """Get detailed info for a single official data source."""
     src = (await db.execute(

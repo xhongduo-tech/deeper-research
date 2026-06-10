@@ -10,6 +10,7 @@ class Report(Base):
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
     api_key_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("api_keys.id"), index=True, nullable=True)
+    project_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("projects.id"), index=True, nullable=True)
     title: Mapped[str] = mapped_column(String(500))
     brief: Mapped[str] = mapped_column(Text)
     report_type: Mapped[str] = mapped_column(String(17), index=True)

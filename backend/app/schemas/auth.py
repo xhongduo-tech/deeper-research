@@ -21,7 +21,7 @@ class RegisterRequest(BaseModel):
     auth_id: str
     username: str
     department: str
-    scene: str
+    scene: str = "frontend"
     description: str = ""
     password: str
 
@@ -30,7 +30,8 @@ class RecoverRequest(BaseModel):
     auth_id: str
     username: str
     department: str
-    scene: str
+    scene: str = "frontend"
+    new_password: str | None = None
 
 
 class TokenResponse(BaseModel):

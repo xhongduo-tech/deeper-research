@@ -16,6 +16,7 @@ class KnowledgeBase(Base):
     scope = Column(String(20), default="personal")   # personal | dept | team | corp
     kb_type = Column(String(40), default="general")  # general | policy | research | contract | finance | tech | meeting
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True)
     doc_count = Column(Integer, default=0)
     chunk_count = Column(Integer, default=0)
     total_size = Column(Integer, default=0)          # bytes
@@ -25,6 +26,7 @@ class KnowledgeBase(Base):
 
     documents = relationship("KBDocument", back_populates="kb", cascade="all, delete-orphan")
     chunks = relationship("KBChunk", back_populates="kb", cascade="all, delete-orphan")
+    project = relationship("Project", back_populates="knowledge_bases")
 
 
 class KBDocument(Base):

@@ -20,6 +20,7 @@ from app.api import html_report
 from app.api import official_sources
 from app.api import admin_datasources
 from app.api import kb_coverage
+from app.api import projects as projects_api
 from app.services.auth_service import ensure_admin_user
 from app.skills import register_all_skills
 
@@ -101,3 +102,4 @@ app.include_router(kb_coverage.router)
 app.include_router(ingress_api.router)
 app.include_router(compute_api.router)
 app.include_router(admin_bulk.router)
+app.include_router(projects_api.router)
