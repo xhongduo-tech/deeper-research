@@ -18,6 +18,7 @@ import logging
 
 from app.skills.base import Skill
 from app.services.llm_service import chat
+from app.skills.offline.sota_utils import self_critique, adversarial_review
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +26,9 @@ logger = logging.getLogger(__name__)
 class SqlQuerySkill(Skill):
     name = "sql_query"
     description = (
-        "当知识库中包含 Excel/CSV 结构化数据表时，生成并执行 SQL 查询，返回精确的表格结果。"
-        "适合：按分行/部门汇总指标、排名分析、同比环比计算、筛选特定条件数据。"
+        "SOTA SQL查询生成：当知识库包含结构化数据表时，生成并执行 DuckDB SQL 查询。"
+        "含CoT推理、EXPLAIN预验证、自动修复、结果验证、自评。"
+        "适合：汇总指标、排名分析、同比环比、条件筛选。输出精确表格结果 + 质量评分"
     )
     category = "offline"
     parameters = {
@@ -45,6 +47,16 @@ class SqlQuerySkill(Skill):
             "description": "markdown | json | both，默认 markdown",
             "default": "markdown",
         },
+        "enable_critique": {
+            "type": "boolean",
+            "description": "启用查询结果质量自评",
+            "default": True,
+        },
+        "enable_adversarial": {
+            "type": "boolean",
+            "description": "启用红队挑战",
+            "default": True,
+        },
     }
 
     async def execute(self, params: dict, context: dict | None = None) -> dict:
@@ -54,6 +66,8 @@ class SqlQuerySkill(Skill):
         kb_ids: list[str] = params.get("kb_ids") or []
         max_rows: int = int(params.get("max_rows", 100))
         output_format: str = params.get("output_format", "markdown")
+        enable_critique: bool = params.get("enable_critique", True)
+        enable_adversarial: bool = params.get("enable_adversarial", True)
 
         if not question:
             return {"error": "question 参数不能为空"}
@@ -216,6 +230,31 @@ class SqlQuerySkill(Skill):
             result["result_json"] = records
         elif output_format == "markdown":
             result["result_json"] = records  # always include raw for downstream use
+
+        # SOTA: Self-critique on query quality
+        if enable_critique:
+            try:
+                critique_input = f"SQL:\n{generated_sql}\n\n结果摘要:\n{_records_to_markdown(records[:5]) if records else '结果为空'}"
+                critique = await self_critique(
+                    draft=critique_input[:3000],
+                    topic=f"SQL查询 - {question[:50]}",
+                    dimensions=["data_grounding", "logical_rigor", "specificity"],
+                )
+                result["quality_score"] = round(critique["overall_score"] * 10)
+                result["critique"] = critique
+            except Exception as exc:
+                logger.debug("SQLQuery self-critique failed: %s", exc)
+
+        # SOTA: Adversarial review
+        if enable_adversarial:
+            try:
+                adv = await adversarial_review(
+                    output=f"SQL:\n{generated_sql}\n\n结果摘要:\n{_records_to_markdown(records[:5]) if records else '结果为空'}"[:3000],
+                    topic=f"SQL查询 - {question[:50]}",
+                )
+                result["adversarial"] = adv
+            except Exception as exc:
+                logger.debug("SQLQuery adversarial failed: %s", exc)
 
         return result
 

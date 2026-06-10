@@ -1,19 +1,18 @@
-import { useState, useEffect, useMemo, useRef, memo, useDeferredValue } from "react";
+import React, { useState, useEffect, useMemo, useRef, memo, useDeferredValue } from "react";
 import { Sidebar, PageKey } from "./components/Sidebar";
+import { SearchHistoryPanel } from "./components/SearchHistoryPanel";
 import { ChatInput } from "./components/ChatInput";
 import { SuggestionChips, ScenarioSuggestion } from "./components/SuggestionChips";
-import { Sparkles, ThumbsUp, ThumbsDown, MessageCircle, Code2, Copy, Play, X, CheckCircle2, Circle, Loader2, FileCode2, Download, Pencil, File, ChevronRight, Terminal, FileSearch, PenLine, ClipboardCheck, RotateCcw, Database } from "lucide-react";
-import { TemplatePage, docsConfig } from "./components/TemplatePage";
+import { Sparkles, ThumbsUp, ThumbsDown, MessageCircle, Code2, Copy, Play, X, CheckCircle2, Circle, Loader2, FileCode2, Download, Pencil, File, ChevronRight, Terminal, FileSearch, PenLine, ClipboardCheck, RotateCcw, Database, Presentation, Table2, Construction, FileText } from "lucide-react";
+import { TemplatePage, docsConfig, pptConfig, sheetConfig } from "./components/TemplatePage";
 import HtmlPage from "./components/HtmlPage";
 import TechIntroModal from "./components/TechIntroModal";
 import { WelcomeModal, useWelcomeModal } from "./components/WelcomeModal";
-import DataLabPage from "./components/DataLabPage";
 import KnowledgeBasePage from "./components/KnowledgeBasePage";
 import { DatabaseQueryCard } from "./components/DatabaseQueryCard";
 import { PlanStepper, StepItem, ThinkingBlock, TypingText, stripPlanStepNumber as stripStep } from "./components/PlanStepper";
 import { LoginModal } from "./components/LoginModal";
-import { SearchHistoryPanel } from "./components/SearchHistoryPanel";
-import { api, ChatMessage, DocumentPlan, ReportDetail, ReportItem, ReportPreview, UserInfo } from "./lib/api";
+import { api, ChatMessage, DocumentPlan, ReportDetail, ReportItem, ReportPreview, UserInfo, safeStorage } from "./lib/api";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 
@@ -26,6 +25,7 @@ export interface Conversation {
   tags?: string[];
   pinned?: boolean;
   running?: boolean;
+  project_id?: number | null;
 }
 
 type SubmitPayload = {
@@ -36,6 +36,7 @@ type SubmitPayload = {
   templateFileId?: number | null;
   template?: string | null;
   scenario?: string | null;
+  reportType?: string | null;
   pageRange?: string | null;
   wordCount?: string | null;
   modelId?: string | null;
@@ -46,6 +47,7 @@ type SubmitPayload = {
   database?: string | null;
   kb_ids?: number[];
   include_system_kb?: boolean;
+  project_id?: number | null;
 };
 
 type DocumentPlanQuestion = {
@@ -149,13 +151,53 @@ function FeatureInProgressPage({ title, etaText = "预期 2 月内上线" }: { t
   );
 }
 
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error?: Error }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // eslint-disable-next-line no-console
+    console.error("React ErrorBoundary caught:", error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex-1 flex items-center justify-center px-6">
+          <div className="max-w-[520px] w-full rounded-2xl border p-8 text-center" style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}>
+            <h2 className="text-[18px] font-semibold mb-3" style={{ color: "var(--ink-900)" }}>页面渲染出错</h2>
+            <p className="text-[14px] leading-6 mb-5" style={{ color: "var(--ink-500)" }}>
+              抱歉，界面渲染时遇到了问题。请尝试刷新页面，或清除浏览器缓存后重试。
+            </p>
+            <button
+              onClick={() => window.location.reload()}
+              className="px-5 py-2.5 rounded-xl text-[13px] font-semibold text-white"
+              style={{ background: "var(--ink-900)" }}
+            >
+              刷新页面
+            </button>
+            {this.state.error && (
+              <pre className="mt-4 text-left text-[11px] p-3 rounded-lg overflow-auto" style={{ background: "var(--bg-subtle)", color: "#ef4444", maxHeight: 160 }}>
+                {this.state.error.message}
+              </pre>
+            )}
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [page, setPage] = useState<PageKey>("home");
   const [isLoggedIn, setIsLoggedIn] = useState(api.isLoggedIn);
   const [user, setUser] = useState<UserInfo | null>(null);
   const [showLogin, setShowLogin] = useState(false);
-  const [showSearchHistory, setShowSearchHistory] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedScenario, setSelectedScenario] = useState<ScenarioSuggestion | null>(null);
   const [showHomeContent, setShowHomeContent] = useState(false);
@@ -164,8 +206,13 @@ export default function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [documentWorkspace, setDocumentWorkspace] = useState<DocumentWorkspaceState | null>(null);
+  const [currentProjectId, setCurrentProjectId] = useState<number | null>(() => {
+    const saved = localStorage.getItem("da_current_project_id");
+    return saved ? Number(saved) : null;
+  });
   const [techModalOpen, setTechModalOpen] = useState(false);
   const [techModalInitialId, setTechModalInitialId] = useState<string | undefined>();
+  const [showHistoryPanel, setShowHistoryPanel] = useState(false);
   const { show: showWelcome, dismiss: dismissWelcome } = useWelcomeModal();
   const cancelledConversationsRef = useRef<Set<string>>(new Set());
   const activeConversationRef = useRef<string | null>(null);
@@ -183,11 +230,37 @@ export default function App() {
     });
   }, []);
 
+  const PINNED_KEY = "da_pinned_conversations";
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(PINNED_KEY);
+      return new Set(raw ? JSON.parse(raw) : []);
+    } catch {
+      return new Set<string>();
+    }
+  });
+
   const handlePinConversation = (id: string) => {
+    setPinnedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      try {
+        localStorage.setItem(PINNED_KEY, JSON.stringify([...next]));
+      } catch {}
+      return next;
+    });
     setConversations((prev) =>
       prev.map((c) => (c.id === id ? { ...c, pinned: !c.pinned } : c))
     );
   };
+
+  // Sync pinned state from localStorage when conversations load
+  useEffect(() => {
+    setConversations((prev) =>
+      prev.map((c) => ({ ...c, pinned: pinnedIds.has(c.id) }))
+    );
+  }, [pinnedIds]);
 
   const handleDeleteConversation = (id: string) => {
     cancelledConversationsRef.current.add(id);
@@ -200,7 +273,6 @@ export default function App() {
       busyTokenRef.current = null;
       setBusy(false);
       setPage("home");
-      setShowSearchHistory(false);
     }
     const reportId = Number(id);
     if (Number.isFinite(reportId)) {
@@ -218,9 +290,38 @@ export default function App() {
     busyTokenRef.current = null;
     setBusy(false);
     setSelectedScenario(null);
-    setShowSearchHistory(false);
+    setCurrentProjectId(null);
+    localStorage.removeItem("da_current_project_id");
     setPage("home");
     setShowHomeContent(true);
+    setShowHistoryPanel(false);
+  };
+
+  const handleSelectProject = (projectId: number | null) => {
+    setCurrentProjectId(projectId);
+    if (projectId != null) {
+      localStorage.setItem("da_current_project_id", String(projectId));
+    } else {
+      localStorage.removeItem("da_current_project_id");
+    }
+    // Refresh conversation list for the selected project context
+    if (api.isLoggedIn) {
+      void refreshUserAndReports();
+    }
+  };
+
+  const refreshUserAndReports = async () => {
+    try {
+      const [me, list] = await Promise.all([api.me(), api.listReports()]);
+      setUser(me);
+      setIsLoggedIn(true);
+      const mapped = mapReportsToConversations(list.reports);
+      setConversations(mapped.map((c) => ({ ...c, pinned: pinnedIds.has(c.id) })));
+    } catch {
+      setIsLoggedIn(false);
+      setUser(null);
+      setConversations([]);
+    }
   };
 
   useEffect(() => {
@@ -231,25 +332,11 @@ export default function App() {
     void refreshUserAndReports();
   }, []);
 
-  async function refreshUserAndReports() {
-    try {
-      const [me, list] = await Promise.all([api.me(), api.listReports()]);
-      setUser(me);
-      setIsLoggedIn(true);
-      setConversations(mapReportsToConversations(list.reports));
-    } catch {
-      setIsLoggedIn(false);
-      setUser(null);
-      setConversations([]);
-    }
-  }
-
   const handleLogout = () => {
     api.clearToken();
     setUser(null);
     setIsLoggedIn(false);
     setConversations([]);
-    setShowSearchHistory(false);
     setShowLogin(true);
   };
   const handleLogin = async (authId: string, password: string) => {
@@ -263,8 +350,25 @@ export default function App() {
     department: string;
     password: string;
   }) => {
-    await api.register(payload);
+    try {
+      await api.register(payload);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "注册失败";
+      if (message.includes("已存在")) {
+        throw new Error("该统一认证号或姓名已注册，请直接登录；如果忘记密码，请使用找回密码。");
+      }
+      throw err;
+    }
     await handleLogin(payload.auth_id, payload.password);
+  };
+  const handleRecover = async (payload: {
+    auth_id: string;
+    username: string;
+    department: string;
+    new_password: string;
+  }) => {
+    await api.recover(payload);
+    await handleLogin(payload.auth_id, payload.new_password);
   };
   const handleNeedLogin = () => setShowLogin(true);
 
@@ -349,6 +453,7 @@ export default function App() {
       pending.payload.template ? `文档模板：${pending.payload.template}` : "",
       pending.payload.database ? `专业数据库：${pending.payload.database}` : "",
       pending.payload.scenario ? `类型：${pending.payload.scenario}` : "",
+      pending.payload.reportType ? `文档类型：${pending.payload.reportType}` : "",
       pending.payload.executionMode === "plan" ? "执行方式：已确认计划后执行" : "执行方式：直接执行",
     ].filter(Boolean).join("\n");
     setBusy(true);
@@ -369,13 +474,14 @@ export default function App() {
       const report = await api.createReport({
         title: pending.prompt.slice(0, 100),
         brief: suffix ? `${prompt}\n\n${suffix}` : prompt,
-        report_type: pending.payload.template || "文档",
+        report_type: pending.payload.reportType || pending.payload.scenario || pending.payload.template || "文档",
         output_format: "word",
         uploaded_files: pending.uploadedIds,
         model_id: pending.payload.modelId || undefined,
         effort: pending.payload.effort || "low",
         skills: pending.payload.skills || [],
         skip_clarify: true,
+        project_id: currentProjectId,
       });
       const conversation = reportToConversation(report);
       setConversations((prev) => [{ ...conversation, running: true }, ...prev.filter((c) => c.id !== conversation.id)]);
@@ -435,7 +541,6 @@ export default function App() {
         const pending = { prompt, payload, uploadedIds };
         const title = prompt.slice(0, 36) || "文档任务";
         setPage("docs");
-        setShowSearchHistory(false);
         if (payload.executionMode === "direct") {
           setDocumentWorkspace({
             status: "running",
@@ -476,13 +581,12 @@ export default function App() {
             {
               id: `offline-notice-${Date.now()}`,
               role: "assistant" as const,
-              content: "当前**联网搜索能力**尚未开启，无法获取实时信息（天气、新闻、行情等）。\n\n如需使用联网功能，请联系管理员在后台开启 **外部搜索** 配置。您也可以改为询问知识库中已有的内容，或上传相关文件后再提问。",
+              content: "当前**联网搜索能力**尚未开启，无法获取实时信息（天气、新闻、行情等）。\n\n如需使用联网功能，请联系管理员在后台开启 **外部搜索** 配置。您也可以改为询问数据库中已有的内容，或上传相关文件后再提问。",
               created_at: new Date().toISOString(),
             },
           ]);
           setBusy(false);
           busyTokenRef.current = null;
-          setShowSearchHistory(false);
           setPage("home");
           return;
         }
@@ -496,7 +600,6 @@ export default function App() {
         setChatMessages((prev) => [...prev, pendingUserMessage, pendingAssistantMessage]);
         setActiveConversationId(localConversationId);
         activeConversationRef.current = localConversationId;
-        setShowSearchHistory(false);
         setPage("home");
         setConversations((prev) => [
           {
@@ -518,7 +621,8 @@ export default function App() {
             conversation_id: activeChatId || undefined,
             uploaded_files: uploadedIds,
             kb_ids: payload.kb_ids || [],
-            include_system_kb: payload.include_system_kb || false,
+            include_system_kb: true, // always pull from corp-scope system KBs
+            project_id: currentProjectId,
           });
           if (cancelledConversationsRef.current.has(localConversationId)) return;
           const realId = String(result.report_id);
@@ -526,11 +630,23 @@ export default function App() {
           setActiveConversationId(realId);
           activeConversationRef.current = realId;
           const visible = result.messages.filter((m) => m.role !== "system");
+          // Attach RAG sources + intent_domain to the last assistant message
+          const enrichLast = (msgs: ChatMessage[]): ChatMessage[] => {
+            const lastAsstIdx = msgs.map((m) => m.role).lastIndexOf("assistant");
+            if (lastAsstIdx < 0 || (!result.sources?.length && !result.intent_domain)) return msgs;
+            return msgs.map((m, i) =>
+              i === lastAsstIdx
+                ? { ...m, sources: result.sources ?? [], intent_domain: result.intent_domain }
+                : m
+            );
+          };
           if (visible.length > 0) {
-            setChatMessages(visible);
+            setChatMessages(enrichLast(visible));
           } else {
             setChatMessages((prev) => prev.map((m) =>
-              m.id === assistantId ? { ...m, content: result.answer, streaming: false } : m
+              m.id === assistantId
+                ? { ...m, content: result.answer, streaming: false, sources: result.sources ?? [], intent_domain: result.intent_domain }
+                : m
             ));
           }
           const conversation = reportToConversation({
@@ -565,22 +681,24 @@ export default function App() {
         payload.modelId ? `模型：${payload.modelId}` : "",
         payload.template ? `模板：${payload.template}` : "",
         payload.scenario ? `类型：${payload.scenario}` : "",
+        payload.reportType ? `文档类型：${payload.reportType}` : "",
         payload.pageRange ? `页数：${payload.pageRange}` : "",
         payload.wordCount ? `字数：${payload.wordCount}` : "",
       ].filter(Boolean).join("\n");
       const report = await api.createReport({
         title: prompt.slice(0, 100),
         brief: suffix ? `${prompt}\n\n${suffix}` : prompt,
+        report_type: payload.reportType || payload.scenario || undefined,
         output_format: payload.outputFormat,
         uploaded_files: uploadedIds,
         model_id: payload.modelId || undefined,
         effort: payload.effort || "low",
         skills: payload.skills || [],
         kb_ids: payload.kb_ids || [],
+        project_id: currentProjectId,
       });
       const conversation = reportToConversation(report);
       setConversations((prev) => [conversation, ...prev.filter((c) => c.id !== conversation.id)]);
-      setShowSearchHistory(true);
     } finally {
       if (busyTokenRef.current === busyToken) {
         busyTokenRef.current = null;
@@ -590,8 +708,8 @@ export default function App() {
   };
 
   const handleSelectConversation = async (id: string) => {
+    setShowHistoryPanel(false);
     const conversation = conversations.find((c) => c.id === id);
-    setShowSearchHistory(false);
     const reportId = Number(id);
     if (!Number.isFinite(reportId)) return;
     setActiveChatId(reportId);
@@ -663,7 +781,15 @@ export default function App() {
         prompt: cleanPrompt,
       });
       const visible = result.messages.filter((m) => m.role !== "system");
-      setChatMessages(visible.length > 0 ? visible : [{ id: assistantId, role: "assistant", content: result.answer }]);
+      const enriched = (() => {
+        const msgs = visible.length > 0 ? visible : [{ id: assistantId, role: "assistant" as const, content: result.answer }];
+        const lastAsstIdx = msgs.map((m) => m.role).lastIndexOf("assistant");
+        if (lastAsstIdx < 0) return msgs;
+        return msgs.map((m, i) =>
+          i === lastAsstIdx ? { ...m, sources: result.sources ?? [], intent_domain: result.intent_domain } : m
+        );
+      })();
+      setChatMessages(enriched);
       const conversation = reportToConversation({
         id: result.report_id,
         title: cleanPrompt.slice(0, 100),
@@ -707,8 +833,30 @@ export default function App() {
       setChatMessages([]);
       setActiveChatId(null);
     }
+    // Clear knowledge page initial state when navigating via sidebar
+    setKnowledgeInitialState({});
+    setShowHistoryPanel(false);
     setPage(pageKey);
-    setShowSearchHistory(false);
+  };
+
+  const [knowledgeInitialState, setKnowledgeInitialState] = useState<{
+    tab?: "system" | "project" | "ontology";
+    projectSubTab?: "tables" | "graph";
+    projectId?: number;
+  }>({});
+
+  const handleOpenProjectDB = (projectId: number) => {
+    setCurrentProjectId(projectId);
+    safeStorage.set("da_current_project_id", String(projectId));
+    setKnowledgeInitialState({ tab: "project", projectSubTab: "tables", projectId });
+    setPage("knowledge");
+  };
+
+  const handleOpenProjectGraph = (projectId: number) => {
+    setCurrentProjectId(projectId);
+    safeStorage.set("da_current_project_id", String(projectId));
+    setKnowledgeInitialState({ tab: "project", projectSubTab: "graph", projectId });
+    setPage("knowledge");
   };
 
   const [greetingInfo] = useState(() => getGreetingInfo());
@@ -728,7 +876,7 @@ export default function App() {
   const renderPage = () => {
     switch (page) {
       case "ppt":
-        return <FeatureInProgressPage title="PPT" />;
+        return <ComingSoonPage icon={Presentation} title="PPT 生成" />;
       case "docs":
         if (documentWorkspace) {
           return (
@@ -745,14 +893,22 @@ export default function App() {
           );
         }
 	        return <TemplatePage config={docsConfig} onSubmit={handleCreateReport} busy={busy}
+	          currentProjectId={currentProjectId}
+	          onSelectProject={handleSelectProject}
+	          isLoggedIn={isLoggedIn}
+	          onNeedLogin={handleNeedLogin}
 	          onOpenTechIntro={(id) => { setTechModalInitialId(id); setTechModalOpen(true); }}
-	          onOpenDatabasePage={() => handlePageSelect("datalab")} />;
+	          onOpenDatabasePage={() => handlePageSelect("knowledge")} />;
       case "sheet":
-        return <FeatureInProgressPage title="表格" />;
-      case "datalab":
-        return <DataLabPage />;
+        return <ComingSoonPage icon={Table2} title="表格分析" />;
       case "knowledge":
-        return <KnowledgeBasePage />;
+        return (
+          <KnowledgeBasePage
+            initialTab={knowledgeInitialState.tab}
+            initialProjectSubTab={knowledgeInitialState.projectSubTab}
+            initialProjectId={knowledgeInitialState.projectId}
+          />
+        );
 	      case "html":
         return (
           <HtmlPage
@@ -770,6 +926,8 @@ export default function App() {
               onNeedLogin={handleNeedLogin}
               onSubmit={handleCreateReport}
               onRegenerate={handleRegenerateChatMessage}
+              currentProjectId={currentProjectId}
+              onSelectProject={handleSelectProject}
             />
           );
         }
@@ -841,6 +999,9 @@ export default function App() {
                       busy={busy}
                       selectedScenario={selectedScenario}
                       onClearScenario={() => setSelectedScenario(null)}
+                      onAgentSelect={(agentKey) => handlePageSelect(agentKey)}
+                      currentProjectId={currentProjectId}
+                      onSelectProject={handleSelectProject}
                     />
                   </div>
                   <SuggestionChips onSelect={(scenario) => setSelectedScenario(scenario)} />
@@ -878,48 +1039,37 @@ export default function App() {
         onLogout={handleLogout}
         onNeedLogin={handleNeedLogin}
         user={user}
-        onSearchHistory={() => {
-          if (!isLoggedIn) {
-            handleNeedLogin();
-            return;
-          }
-          setShowSearchHistory(true);
-        }}
-        searchHistoryOpen={showSearchHistory}
         conversations={conversations}
         onPinConversation={handlePinConversation}
         onDeleteConversation={handleDeleteConversation}
+        currentProjectId={currentProjectId}
+        onSelectProject={handleSelectProject}
+        onOpenHistory={() => setShowHistoryPanel(true)}
+        onOpenProjectDB={handleOpenProjectDB}
+        onOpenProjectGraph={handleOpenProjectGraph}
       />
 
-      {/* Wrapper gives SearchHistoryPanel a clean absolute-inset-0 context
-          independent of main's scroll position */}
-      <div className="flex-1 min-w-0 relative flex flex-col">
-        <main
-          className="flex-1 flex flex-col min-w-0 overflow-y-auto"
-          style={{
-            scrollbarGutter: "stable",
-            visibility: showSearchHistory ? "hidden" : "visible",
-            pointerEvents: showSearchHistory ? "none" : "auto",
-          }}
-        >
+      <main className="flex-1 flex flex-col min-w-0 overflow-y-auto relative" style={{ scrollbarGutter: "stable" }}>
+        <ErrorBoundary>
+          <SearchHistoryPanel
+            open={showHistoryPanel}
+            onClose={() => setShowHistoryPanel(false)}
+            onNewConversation={handleNewConversation}
+            onSelectConversation={handleSelectConversation}
+            conversations={conversations}
+            onPinConversation={handlePinConversation}
+            onDeleteConversation={handleDeleteConversation}
+          />
           {renderPage()}
-        </main>
-        <SearchHistoryPanel
-          open={showSearchHistory}
-          onClose={() => setShowSearchHistory(false)}
-          onNewConversation={() => { setShowSearchHistory(false); handleNewConversation(); }}
-          onSelectConversation={handleSelectConversation}
-          conversations={conversations}
-          onPinConversation={handlePinConversation}
-          onDeleteConversation={handleDeleteConversation}
-        />
-      </div>
+        </ErrorBoundary>
+      </main>
 
       {showLogin && (
         <LoginModal
           onClose={() => setShowLogin(false)}
           onLogin={handleLogin}
           onRegister={handleRegister}
+          onRecover={handleRecover}
         />
       )}
       <TechIntroModal
@@ -3021,6 +3171,7 @@ function reportToConversation(report: ReportItem): Conversation {
     group: getConversationGroup(report.created_at),
     tags: [tag],
     running,
+    project_id: report.project_id,
   };
 }
 
@@ -3052,6 +3203,8 @@ function ChatConversationView({
   onNeedLogin,
   onSubmit,
   onRegenerate,
+  currentProjectId,
+  onSelectProject,
 }: {
   messages: ChatMessage[];
   busy: boolean;
@@ -3059,13 +3212,15 @@ function ChatConversationView({
   onNeedLogin: () => void;
   onSubmit: (payload: SubmitPayload) => void;
   onRegenerate: (messageId: number | string, prompt: string) => void;
+  currentProjectId: number | null;
+  onSelectProject: (projectId: number | null) => void;
 }) {
   const hasPendingAssistant = messages.some((message) => message.role === "assistant" && !message.created_at);
   const showGlobalThinking = busy && !hasPendingAssistant;
   const bottomRef = useRef<HTMLDivElement | null>(null);
-  const contentSignature = messages.map((message) => `${message.id}:${message.content.length}`).join("|");
+  const contentSignature = messages.map((message) => `${message.id}:${(message.content || "").length}`).join("|");
   const artifact = useMemo(() => detectChatArtifact(messages), [contentSignature]);
-  const artifactKey = artifact ? `${artifact.type}:${artifact.title}:${artifact.language || ""}:${artifact.content.length}` : "";
+  const artifactKey = artifact ? `${artifact.type}:${artifact.title}:${artifact.language || ""}:${(artifact.content || "").length}` : "";
   const [panelArtifact, setPanelArtifact] = useState<ChatArtifact | null>(null);
   const [prefillText, setPrefillText] = useState("");
   const prevArtifactKeyRef = useRef("");
@@ -3157,6 +3312,8 @@ function ChatConversationView({
               busy={busy}
               prefillText={prefillText}
               onPrefillConsumed={() => setPrefillText("")}
+              currentProjectId={currentProjectId}
+              onSelectProject={onSelectProject}
             />
           </div>
         </div>
@@ -3242,6 +3399,16 @@ function ThinkingPhaseDisplay({ initialPhase }: { initialPhase?: string } = {}) 
     </>
   );
 }
+
+const _DOMAIN_LABELS: Record<string, string> = {
+  business_research: "商业研究",
+  structured_data: "数据分析",
+  software_engineering: "代码工程",
+  document_retrieval: "文档检索",
+  document_template: "模板填充",
+  presentation: "演示文稿",
+  graph_knowledge: "知识图谱",
+};
 
 function ChatBubble({
   message,
@@ -3505,18 +3672,56 @@ function ChatBubble({
         className="min-w-0 flex-1"
         style={{ color: "var(--ink-900)", fontSize: 15, lineHeight: 1.75 }}
       >
-        {message.content ? (
+        {(message.content || "") ? (
           message.streaming ? (
-            <StreamingMarkdown content={message.content} />
+            <StreamingMarkdown content={message.content || ""} />
           ) : (
-            <MarkdownContent content={message.content} onSelectArtifact={onSelectArtifact} />
+            <MarkdownContent content={message.content || ""} onSelectArtifact={onSelectArtifact} />
           )
         ) : (
           <ThinkingPhaseDisplay />
         )}
+        {/* ── RAG 来源 + 意图领域标注 ───────────────────────────────── */}
+        {showFeedback && message.sources && message.sources.length > 0 && (
+          <div className="mt-2.5 flex flex-wrap gap-1.5">
+            {message.intent_domain && (
+              <span
+                title={`意图领域：${message.intent_domain}`}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 4,
+                  height: 20, padding: "0 7px", borderRadius: 6,
+                  background: "rgba(91,78,232,.09)", color: "var(--brand, #5b4ee8)",
+                  fontSize: 10.5, fontWeight: 650, letterSpacing: ".01em",
+                }}
+              >
+                ⬡ {_DOMAIN_LABELS[message.intent_domain] ?? message.intent_domain}
+              </span>
+            )}
+            {message.sources.map((s, i) => (
+              <span
+                key={i}
+                title={s.snippet}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 3,
+                  height: 20, padding: "0 7px", borderRadius: 6,
+                  background: "var(--bg-subtle)", border: "1px solid var(--border)",
+                  color: "var(--ink-600)", fontSize: 10.5, fontWeight: 550,
+                  maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  cursor: "default",
+                }}
+              >
+                <svg width="9" height="9" viewBox="0 0 9 9" fill="none" style={{ flexShrink: 0 }}>
+                  <circle cx="4.5" cy="4.5" r="4" stroke="currentColor" strokeWidth="1" fill="none"/>
+                  <path d="M4.5 2.5v2.5l1.5 1" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
+                </svg>
+                {s.source}
+              </span>
+            ))}
+          </div>
+        )}
         {showFeedback && (
           <div
-            className="mt-3 flex items-center gap-1.5 flex-wrap"
+            className="mt-2 flex items-center gap-1.5 flex-wrap"
             style={{ color: "var(--ink-400)", fontSize: 11, lineHeight: 1.4, fontWeight: 500 }}
           >
             <span>{formatMessageTime(message.created_at)}</span>
@@ -3589,13 +3794,13 @@ function ChatBubble({
 }
 
 function detectChatArtifact(messages: ChatMessage[]): ChatArtifact | null {
-  const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant" && message.content.trim());
+  const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant" && (message.content || "").trim());
   if (!latestAssistant) return null;
   // Don't pop the right-side artifact panel while the answer is still
   // streaming — code fences are often half-open mid-stream and the
   // detection misfires on incomplete content. Wait for completion.
   if (latestAssistant.streaming) return null;
-  const content = latestAssistant.content.trim();
+  const content = (latestAssistant.content || "").trim();
   const code = extractLastCodeBlock(content);
   if (code && shouldPromoteCodeArtifact(code.language, code.code, content)) {
     return {
@@ -3624,11 +3829,19 @@ function extractLastCodeBlock(content: string): { language: string; code: string
 
 function shouldPromoteCodeArtifact(language: string, code: string, fullContent: string) {
   const lang = language.toLowerCase();
-  if (["js", "jsx", "ts", "tsx", "python", "py", "html", "css", "sql", "json", "yaml", "yml", "bash", "sh", "go", "java", "cpp", "c", "rust"].includes(lang)) {
-    return code.length >= 150;
+  const promoLangs = ["js", "jsx", "ts", "tsx", "python", "py", "html", "css", "sql", "json", "yaml", "yml", "bash", "sh", "go", "java", "cpp", "c", "rust"];
+  // Code must be large enough and represent a meaningful fraction of the response.
+  // A code *example* embedded in an explanation should stay inline; a code *artifact*
+  // (the primary deliverable) dominates the response.
+  const codeRatio = code.length / Math.max(fullContent.length, 1);
+  const isCodeDominant = codeRatio >= 0.35; // code is at least 35% of total response
+  const isExplicitRequest = /生成|新建|实现|代码|脚本|组件|页面|函数|写一个|帮我写|帮我生成|class|interface|def |import |export |SELECT |CREATE TABLE/i.test(fullContent);
+  if (promoLangs.includes(lang)) {
+    // Promote if: code is large enough AND (code dominates OR user explicitly asked for code)
+    return code.length >= 200 && (isCodeDominant || isExplicitRequest);
   }
-  if (/生成|新建|实现|代码|脚本|组件|页面|函数|class|interface|def |import |export |SELECT |CREATE TABLE/i.test(fullContent + "\n" + code)) {
-    return code.length > 200;
+  if (isExplicitRequest) {
+    return code.length > 300 && isCodeDominant;
   }
   return false;
 }
@@ -4156,58 +4369,149 @@ const MarkdownContent = memo(function MarkdownContent({
   return (
     <div className="da-markdown">
       <style>{`
+        /* ── Base ─────────────────────────────────── */
         .da-markdown > *:first-child { margin-top: 0; }
         .da-markdown > *:last-child { margin-bottom: 0; }
-        .da-markdown p { margin: 0 0 10px; }
-        .da-markdown h1, .da-markdown h2, .da-markdown h3 { position: relative; margin: 16px 0 8px; color: var(--ink-900); font-weight: 780; letter-spacing: 0; }
-        .da-markdown h1 { font-size: 21px; line-height: 1.35; }
-        .da-markdown h2 { font-size: 17px; line-height: 1.45; padding-left: 10px; }
-        .da-markdown h2::before { content: ""; position: absolute; left: 0; top: .28em; bottom: .28em; width: 3px; border-radius: 99px; background: var(--brand, #5b4ee8); }
-        .da-markdown h3 { font-size: 15px; line-height: 1.5; color: var(--ink-800); }
+        .da-markdown p { margin: 0 0 10px; line-height: 1.72; color: var(--ink-800); }
+
+        /* ── Headings ─────────────────────────────── */
+        .da-markdown h1, .da-markdown h2, .da-markdown h3, .da-markdown h4 {
+          position: relative; margin: 20px 0 8px; color: var(--ink-900); font-weight: 760; letter-spacing: -.01em;
+        }
+        .da-markdown > *:first-child { margin-top: 0; }
+        .da-markdown h1 { font-size: 20px; line-height: 1.35; margin-bottom: 10px; }
+        .da-markdown h2 { font-size: 16px; line-height: 1.45; padding-left: 11px; }
+        .da-markdown h2::before {
+          content: ""; position: absolute; left: 0; top: .3em; bottom: .3em;
+          width: 3px; border-radius: 99px; background: var(--brand, #5b4ee8);
+        }
+        .da-markdown h3 { font-size: 14.5px; line-height: 1.5; color: var(--ink-800); font-weight: 720; }
+        .da-markdown h4 { font-size: 13.5px; line-height: 1.55; color: var(--ink-700); font-weight: 680; }
+
+        /* ── Inline emphasis ──────────────────────── */
         .da-markdown strong { color: var(--ink-900); font-weight: 760; }
-        .da-markdown em { color: var(--ink-600); }
-        .da-markdown .md-highlight { padding: 1px 4px 2px; border-radius: 4px; background: rgba(245,158,11,.18); box-decoration-break: clone; -webkit-box-decoration-break: clone; }
-        .da-markdown .md-color-red { color: #a61b1b; font-weight: 700; }
-        .da-markdown .md-color-blue { color: #1d4ed8; font-weight: 680; }
-        .da-markdown .md-color-green { color: #047857; font-weight: 680; }
+        .da-markdown em { color: var(--ink-600); font-style: italic; }
+
+        /* ── Inline color/badge annotations ──────── */
+        /* Principle: color marks TYPE not emphasis — keep saturation low */
+        .da-markdown .md-highlight {
+          padding: 1px 4px 2px; border-radius: 4px;
+          background: rgba(245,158,11,.13); color: var(--ink-800);
+          box-decoration-break: clone; -webkit-box-decoration-break: clone;
+        }
+        .da-markdown .md-color-red   { color: #b02020; font-weight: 640; }
+        .da-markdown .md-color-blue  { color: #2563eb; font-weight: 600; }
+        .da-markdown .md-color-green { color: #15803d; font-weight: 600; }
         .da-markdown .md-color-muted { color: var(--ink-500); }
-        .da-markdown .md-soft-red { padding: 1px 5px 2px; border-radius: 5px; color: #a61b1b; background: rgba(220,38,38,.09); box-decoration-break: clone; -webkit-box-decoration-break: clone; }
-        .da-markdown .md-soft-blue { padding: 1px 5px 2px; border-radius: 5px; color: #1d4ed8; background: rgba(37,99,235,.09); box-decoration-break: clone; -webkit-box-decoration-break: clone; }
-        .da-markdown .md-soft-green { padding: 1px 5px 2px; border-radius: 5px; color: #047857; background: rgba(16,185,129,.10); box-decoration-break: clone; -webkit-box-decoration-break: clone; }
-        .da-markdown .md-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 1px 7px; border-radius: 6px; color: #a61b1b; background: rgba(220,38,38,.10); font-size: .9em; font-weight: 740; vertical-align: baseline; }
-        .da-markdown ul, .da-markdown ol { margin: 6px 0 12px; padding-left: 22px; }
-        .da-markdown li { margin: 3px 0; }
-        .da-markdown code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }
-        .da-markdown .md-hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
-        .da-markdown .md-code-wrap { margin: 13px 0 15px; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; background: #171717; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.08), inset 0 1px 0 rgba(255,255,255,.04); }
-        .da-markdown .md-code-head { height: 32px; padding: 0 8px 0 12px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,.08); background: #202020; color: #a3a3a3; font-size: 11px; font-weight: 650; }
-        .da-markdown .md-code-copy { height: 20px; padding: 0 5px; display: inline-flex; align-items: center; gap: 4px; border-radius: 5px; color: #a3a3a3; font-size: 11px; font-weight: 650; transition: background .15s ease, color .15s ease; }
+        .da-markdown .md-soft-red   { padding: 1px 5px 2px; border-radius: 5px; color: #b02020; background: rgba(176,32,32,.08); box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+        .da-markdown .md-soft-blue  { padding: 1px 5px 2px; border-radius: 5px; color: #2563eb; background: rgba(37,99,235,.08); box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+        .da-markdown .md-soft-green { padding: 1px 5px 2px; border-radius: 5px; color: #15803d; background: rgba(21,128,61,.08); box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+        .da-markdown .md-badge {
+          display: inline-flex; align-items: center; min-height: 18px; padding: 0 6px;
+          border-radius: 5px; color: var(--ink-700); background: var(--bg-subtle);
+          border: 1px solid var(--border); font-size: .85em; font-weight: 660; vertical-align: baseline;
+        }
+
+        /* ── Lists ────────────────────────────────── */
+        /* ul: custom dot bullets — color gives structure, not clutter */
+        .da-markdown ul { margin: 6px 0 14px; padding: 0; list-style: none; }
+        .da-markdown ul > li {
+          position: relative; padding: 3px 0 3px 20px; margin: 1px 0; line-height: 1.68;
+        }
+        .da-markdown ul > li::before {
+          content: ""; position: absolute; left: 5px; top: 13px;
+          width: 5px; height: 5px; border-radius: 50%;
+          background: var(--brand, #5b4ee8); opacity: .45;
+        }
+        /* ol: numbered badge */
+        .da-markdown ol { margin: 6px 0 14px; padding: 0; list-style: none; counter-reset: md-li; }
+        .da-markdown ol > li {
+          position: relative; padding: 3px 0 3px 28px;
+          counter-increment: md-li; margin: 2px 0; line-height: 1.68;
+        }
+        .da-markdown ol > li::before {
+          content: counter(md-li);
+          position: absolute; left: 0; top: 5px;
+          width: 18px; height: 18px; border-radius: 50%;
+          background: rgba(91,78,232,.10); color: var(--brand, #5b4ee8);
+          font-size: 10px; font-weight: 750; text-align: center; line-height: 18px;
+        }
+
+        /* ── Blockquote ───────────────────────────── */
+        .da-markdown .md-blockquote {
+          margin: 10px 0 14px; padding: 10px 14px 10px 16px;
+          border-left: 3px solid var(--brand, #5b4ee8); border-radius: 0 8px 8px 0;
+          background: rgba(91,78,232,.05); color: var(--ink-700);
+        }
+        .da-markdown .md-blockquote p { margin: 0; color: inherit; }
+
+        /* ── Inline code ──────────────────────────── */
+        .da-markdown code {
+          font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          font-size: 0.9em; background: var(--bg-subtle); border: 1px solid var(--border);
+          border-radius: 5px; padding: 1px 5px;
+        }
+
+        /* ── HR ───────────────────────────────────── */
+        .da-markdown .md-hr { border: 0; border-top: 1px solid var(--border); margin: 18px 0; }
+
+        /* ── Code blocks ──────────────────────────── */
+        .da-markdown .md-code-wrap {
+          margin: 13px 0 15px; border: 1px solid rgba(255,255,255,.08);
+          border-radius: 10px; background: #171717; overflow: hidden;
+          box-shadow: 0 10px 30px rgba(0,0,0,.08), inset 0 1px 0 rgba(255,255,255,.04);
+        }
+        .da-markdown .md-code-head {
+          height: 32px; padding: 0 8px 0 12px; display: flex; align-items: center;
+          justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,.08);
+          background: #202020; color: #a3a3a3; font-size: 11px; font-weight: 650;
+        }
+        .da-markdown .md-code-copy {
+          height: 20px; padding: 0 5px; display: inline-flex; align-items: center; gap: 4px;
+          border-radius: 5px; color: #a3a3a3; font-size: 11px; font-weight: 650;
+          transition: background .15s ease, color .15s ease;
+        }
         .da-markdown .md-code-copy:hover { background: rgba(255,255,255,.08); color: #f5f5f5; }
-        .da-markdown pre { margin: 0; padding: 14px 16px; overflow-x: auto; color: #d4d4d4; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.65; tab-size: 2; }
+        .da-markdown pre {
+          margin: 0; padding: 14px 16px; overflow-x: auto; color: #d4d4d4;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          font-size: 12.5px; line-height: 1.65; tab-size: 2;
+        }
         .da-markdown pre code { padding: 0; border: 0; background: transparent; border-radius: 0; font-size: inherit; white-space: pre; }
-        .da-markdown .md-artifact-card { width: 100%; margin: 12px 0 14px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-elevated); box-shadow: var(--shadow-sm); text-align: left; transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
+
+        /* ── Artifact card ────────────────────────── */
+        .da-markdown .md-artifact-card {
+          width: 100%; margin: 12px 0 14px; display: flex; align-items: center;
+          justify-content: space-between; gap: 14px; padding: 12px 14px;
+          border-radius: 10px; border: 1px solid var(--border); background: var(--bg-elevated);
+          box-shadow: var(--shadow-sm); text-align: left;
+          transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+        }
         .da-markdown .md-artifact-card:hover { border-color: var(--brand-border); box-shadow: var(--shadow-brand); transform: translateY(-1px); }
         .da-markdown .md-artifact-title { color: var(--ink-900); font-size: 13px; font-weight: 700; line-height: 1.4; }
         .da-markdown .md-artifact-meta { margin-top: 3px; color: var(--ink-400); font-size: 11px; font-weight: 500; }
         .da-markdown .md-artifact-preview { width: 54px; height: 38px; border-radius: 6px; background: #171717; border: 1px solid rgba(0,0,0,.08); color: #d4d4d4; overflow: hidden; opacity: .9; }
         .da-markdown .md-artifact-preview pre { padding: 6px; font-size: 5px; line-height: 1.25; color: #d4d4d4; }
+
+        /* ── Math ─────────────────────────────────── */
         .da-markdown .md-math { display: inline-block; color: var(--ink-900); }
         .da-markdown .md-math-block { display: block; text-align: center; margin: 14px 0 18px; overflow-x: auto; overflow-y: hidden; }
-        /* KaTeX surfaces — give display math a bit more vertical breathing
-           room and ensure long formulas can scroll horizontally rather
-           than blow out the bubble width. */
         .da-markdown .md-katex-display { display: inline-block; font-size: 1.05em; }
         .da-markdown .md-katex-inline { display: inline-block; }
         .da-markdown .md-math-block .katex-display { margin: 0; }
-        .da-markdown .tok-comment { color: #6a9955; }
-        .da-markdown .tok-string { color: #ce9178; }
-        .da-markdown .tok-keyword { color: #569cd6; }
-        .da-markdown .tok-number { color: #b5cea8; }
+
+        /* ── Syntax tokens ────────────────────────── */
+        .da-markdown .tok-comment  { color: #6a9955; }
+        .da-markdown .tok-string   { color: #ce9178; }
+        .da-markdown .tok-keyword  { color: #569cd6; }
+        .da-markdown .tok-number   { color: #b5cea8; }
         .da-markdown .tok-function { color: #dcdcaa; }
+
+        /* ── Table ────────────────────────────────── */
         .da-markdown .md-table-wrap { max-width: 100%; overflow-x: auto; margin: 12px 0 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elevated); }
         .da-markdown table { width: 100%; border-collapse: collapse; min-width: 420px; }
         .da-markdown th, .da-markdown td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
-        .da-markdown th { background: var(--bg-subtle); font-weight: 700; color: var(--ink-800); }
+        .da-markdown th { background: var(--bg-subtle); font-weight: 700; color: var(--ink-800); font-size: 12.5px; }
         .da-markdown tr:last-child td { border-bottom: 0; }
       `}</style>
       {renderMarkdownBlocks([...stableBlocks, ...tailBlocks], onSelectArtifact)}
@@ -4222,6 +4526,7 @@ type MarkdownBlock =
   | { type: "table"; rows: string[][] }
   | { type: "code"; language: string; code: string; open?: boolean }
   | { type: "math"; formula: string; block: boolean }
+  | { type: "blockquote"; lines: string[] }
   | { type: "hr" };
 
 function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
@@ -4232,6 +4537,15 @@ function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
     const line = lines[i];
     if (!line.trim()) {
       i += 1;
+      continue;
+    }
+    if (/^>\s/.test(line) || line.trim() === ">") {
+      const bqLines: string[] = [];
+      while (i < lines.length && (/^>\s/.test(lines[i]) || lines[i].trim() === ">")) {
+        bqLines.push(lines[i].replace(/^>\s?/, ""));
+        i += 1;
+      }
+      blocks.push({ type: "blockquote", lines: bqLines });
       continue;
     }
     const codeFence = /^```([a-zA-Z0-9_+#.-]*)\s*$/.exec(line.trim());
@@ -4344,6 +4658,14 @@ const MathBlock = memo(function MathBlock({ formula, block }: { formula: string;
   );
 });
 
+const BlockquoteBlock = memo(function BlockquoteBlock({ lines }: { lines: string[] }) {
+  return (
+    <blockquote className="md-blockquote">
+      {lines.map((line, i) => <p key={i}>{renderInlineMarkdown(line)}</p>)}
+    </blockquote>
+  );
+});
+
 const ListBlock = memo(
   function ListBlock({ ordered, items }: { ordered: boolean; items: string[] }) {
     const Tag = ordered ? "ol" : "ul";
@@ -4453,6 +4775,7 @@ function renderMarkdownBlock(block: MarkdownBlock, index: number | string) {
   if (block.type === "table") return <TableBlock key={index} rows={block.rows} />;
   if (block.type === "math") return <MathBlock key={index} formula={block.formula} block={block.block} />;
   if (block.type === "code") return <CodeBlock key={index} language={block.language} code={block.code} open={!!block.open} />;
+  if (block.type === "blockquote") return <BlockquoteBlock key={index} lines={block.lines} />;
   return <ParagraphBlock key={index} text={block.text} />;
 }
 
@@ -4625,4 +4948,22 @@ function parseServerDate(value: string) {
   if (!raw) return new Date(NaN);
   const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
   return new Date(hasTimezone ? raw : `${raw}Z`);
+}
+
+function ComingSoonPage({ icon: Icon, title }: { icon: React.ElementType; title: string }) {
+  return (
+    <div className="flex-1 flex items-center justify-center" style={{ background: "var(--bg)" }}>
+      <div className="text-center px-6">
+        <div
+          className="inline-flex items-center justify-center rounded-2xl mb-5"
+          style={{ width: 64, height: 64, background: "var(--bg-subtle)", border: "1px solid var(--border)" }}
+        >
+          <Construction size={28} style={{ color: "var(--ink-400)" }} />
+        </div>
+        <h2 className="text-[18px] font-semibold mb-2" style={{ color: "var(--ink-900)" }}>{title}</h2>
+        <p className="text-[14px] mb-1" style={{ color: "var(--ink-500)" }}>该功能正在紧锣密鼓开发中</p>
+        <p className="text-[13px]" style={{ color: "var(--ink-400)" }}>即将开放，敬请期待</p>
+      </div>
+    </div>
+  );
 }

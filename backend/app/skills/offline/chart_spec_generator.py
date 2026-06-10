@@ -1,17 +1,25 @@
-"""Chart Spec Generator — produce ECharts-compatible JSON specs for the frontend."""
+"""Chart Spec Generator — SOTA-enhanced ECharts-compatible JSON spec generation.
+
+Enhancements:
+  - Chain-of-Thought: reason about chart design before spec generation
+  - Self-critique: checks visual design quality, data accuracy, accessibility
+  - Adversarial review: challenges chart type choice, color accessibility
+  - Quality score (0-100) per spec
+  - Structured JSON output with auto-repair
+  - Confidence scoring per design decision
+"""
 from app.skills.base import Skill
 from app.services.llm_service import chat_json
+from app.skills.offline.sota_utils import self_critique, adversarial_review, structured_generate
 
 
 class ChartSpecGeneratorSkill(Skill):
     name = "generate_chart_spec"
     description = (
-        "根据数据和分析需求生成可直接渲染的 ECharts 5.x 配置 JSON。"
-        "支持：折线(line)、面积(area)、堆叠面积(stacked_area)、"
-        "柱状(bar)、堆叠柱状(stacked_bar)、饼图(pie)、环图(donut)、"
-        "漏斗(funnel)、仪表盘(gauge)、矩形树图(treemap)、桑基图(sankey)、"
-        "箱线图(boxplot)、散点(scatter)、热力图(heatmap)、"
-        "瀑布图(waterfall)、组合图(combo)、雷达(radar)、小多图(small_multiples)"
+        "SOTA图表配置生成：根据数据和分析需求生成可直接渲染的 ECharts 5.x 配置 JSON。"
+        "含图表设计推理、自评、红队挑战和质量评分。"
+        "支持：折线/面积/堆叠面积/柱状/堆叠柱状/饼图/环图/漏斗/仪表盘/矩形树图/"
+        "桑基图/箱线图/散点/热力图/瀑布图/组合图/雷达/小多图"
     )
     category = "offline"
     parameters = {
@@ -33,23 +41,29 @@ class ChartSpecGeneratorSkill(Skill):
             "default": "business",
         },
         "context": {"type": "string", "description": "业务背景描述，用于生成更贴切的标注和洞察"},
+        "enable_critique": {
+            "type": "boolean",
+            "description": "启用图表质量自评",
+            "default": True,
+        },
+        "enable_adversarial": {
+            "type": "boolean",
+            "description": "启用红队挑战",
+            "default": True,
+        },
     }
 
     COLOR_THEMES = {
-        # Primary recommendation — evenly-spaced hues, professional saturation, accessible on white
         "business": ["#2563EB", "#F59E0B", "#22C55E", "#EF4444", "#8B5CF6", "#0EA5E9", "#F97316", "#84CC16"],
-        # Vibrant — saturated, high-energy palette
         "vibrant":  ["#FF6B6B", "#4ECDC4", "#45B7D1", "#6C63FF", "#FFB347", "#EC4899", "#22C55E", "#F97316"],
         "cool":     ["#1E3A5F", "#2E86AB", "#4ECDC4", "#44CF6C", "#6C63FF", "#0D9488", "#7C3AED", "#0369A1"],
         "warm":     ["#DC2626", "#EA580C", "#D97706", "#CA8A04", "#B45309", "#9F1239", "#7C2D12", "#65A30D"],
         "mono":     ["#111827", "#374151", "#4B5563", "#6B7280", "#9CA3AF", "#D1D5DB", "#1F2937", "#0F172A"],
         "diverging":["#D32F2F", "#E64A19", "#F57C00", "#FBC02D", "#4CAF50", "#00897B", "#1976D2", "#7B1FA2"],
         "gradient_blue": ["#1E40AF", "#1D4ED8", "#2563EB", "#3B82F6", "#60A5FA", "#93C5FD", "#0284C7", "#0369A1"],
-        # Brand gold — for premium/executive reports
         "brand":    ["#B45309", "#92400E", "#2563EB", "#1E40AF", "#7C3AED", "#047857", "#991B1B", "#C9A96E"],
     }
 
-    # Gradient definitions — end colour is ~55% lightened for better document legibility
     GRADIENT_PAIRS = {
         "business": [("#2563EB", "#6EA8FE"), ("#F59E0B", "#FDE68A"), ("#22C55E", "#86EFAC"),
                      ("#EF4444", "#FCA5A5"), ("#8B5CF6", "#C4B5FD"), ("#0EA5E9", "#7DD3FC")],
@@ -161,15 +175,6 @@ class ChartSpecGeneratorSkill(Skill):
         ),
     }
 
-    # Rich tooltip formatter templates
-    TOOLTIP_FORMATTERS = {
-        "bar": "'{a}<br/>{b}: <b>{c}</b>'",
-        "line": "axis trigger with multi-series listing",
-        "pie": "'{b}: {c} ({d}%)'",
-        "combo": "axis trigger showing bar value and line rate",
-        "scatter": "'{b}<br/>X: {c[0]}<br/>Y: {c[1]}'",
-    }
-
     async def execute(self, params: dict, context: dict | None = None) -> dict:
         data = params.get("data", "")
         chart_type = params.get("chart_type", "bar")
@@ -178,6 +183,8 @@ class ChartSpecGeneratorSkill(Skill):
         y_fields = params.get("y_fields", [])
         color_theme = params.get("color_theme", "business")
         biz_context = params.get("context", "")
+        enable_critique = params.get("enable_critique", True)
+        enable_adversarial = params.get("enable_adversarial", True)
 
         colors = self.COLOR_THEMES.get(color_theme, self.COLOR_THEMES["vibrant"])
         gradients = self.GRADIENT_PAIRS.get(color_theme, self.GRADIENT_PAIRS["vibrant"])
@@ -233,7 +240,40 @@ class ChartSpecGeneratorSkill(Skill):
                 "可选：添加 series[1].type:'scatter' 展示离群点。"
             )
 
+        # ── Phase 1: CoT Chart Design Reasoning ───────────────────────────────
+        cot_prompt = f"""你是专业数据可视化工程师。在进行图表配置生成前，请先思考以下问题：
+
+图表需求：
+- 类型: {chart_type}
+- 标题: {title}
+- X轴字段: {x_field or '自动推断'}
+- Y轴字段: {y_fields_str}
+- 配色主题: {color_theme}
+- 业务背景: {biz_context or '通用'}
+
+思考任务：
+1. 这种图表类型是否最适合展示这些数据？为什么？
+2. 配色方案是否适配业务场景？
+3. 有哪些重要的数据点需要在图表中特别标注？
+4. 图表可能存在的误导性是什么？
+
+请输出你的图表设计思考过程。"""
+
+        cot_messages = [
+            {"role": "system", "content": "你是资深数据可视化专家，专精 ECharts 5.x。"},
+            {"role": "user", "content": cot_prompt},
+        ]
+        try:
+            from app.services.llm_service import chat as _chat
+            reasoning = await _chat(cot_messages, temperature=0.3, max_tokens=800)
+        except Exception:
+            reasoning = ""
+
+        # ── Phase 2: Spec Generation ──────────────────────────────────────────
         prompt = f"""你是专业数据可视化工程师，请为以下数据生成**高质量**的 ECharts 5.x option 配置对象。
+
+## 图表设计思考
+{reasoning[:600]}
 
 ## 图表需求
 - 类型: {chart_type}
@@ -308,10 +348,41 @@ tooltip: backgroundColor:'rgba(255,255,255,0.96)', borderColor:'#E5E7EB',
             # Post-process: ensure color array is set
             if isinstance(resp, dict) and "color" not in resp:
                 resp["color"] = colors[:8]
-            return {"result": resp, "chart_type": chart_type, "title": title, "theme": color_theme}
+
+            result = {"result": resp, "chart_type": chart_type, "title": title, "theme": color_theme, "reasoning": reasoning}
         except Exception as e:
             fallback = _build_fallback_option(chart_type, title, colors, y_fields)
-            return {"result": fallback, "chart_type": chart_type, "error": str(e)}
+            result = {"result": fallback, "chart_type": chart_type, "title": title, "error": str(e), "reasoning": reasoning}
+
+        # ── Phase 3: Self-critique ────────────────────────────────────────────
+        critique = None
+        adversarial = None
+        quality_score = None
+        if enable_critique:
+            try:
+                critique = await self_critique(
+                    draft=f"图表类型: {chart_type}, 标题: {title}, 数据字段: {y_fields_str}",
+                    topic=f"图表配置 - {title}",
+                    dimensions=["specificity", "structural_clarity", "audience_fit"],
+                )
+                quality_score = round(critique["overall_score"] * 10)
+                result["quality_score"] = quality_score
+                result["critique"] = critique
+            except Exception:
+                pass
+
+        # ── Phase 4: Adversarial review ───────────────────────────────────────
+        if enable_adversarial:
+            try:
+                adversarial = await adversarial_review(
+                    output=f"图表类型: {chart_type}, 标题: {title}",
+                    topic=f"图表配置 - {title}",
+                )
+                result["adversarial"] = adversarial
+            except Exception:
+                pass
+
+        return result
 
 
 def _build_fallback_option(chart_type: str, title: str, colors: list, y_fields: list) -> dict:

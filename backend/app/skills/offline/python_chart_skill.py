@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 
 from app.skills.base import Skill
+from app.skills.offline.sota_utils import self_critique, adversarial_review
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +21,8 @@ logger = logging.getLogger(__name__)
 class PythonChartSkill(Skill):
     name = "generate_python_chart"
     description = (
-        "用 Python (matplotlib/seaborn/plotly/squarify/wordcloud/networkx 等) "
-        "生成专业可视化图表，返回 base64 PNG 图像。"
+        "SOTA Python可视化：用 matplotlib/seaborn/plotly 等生成专业图表，返回 base64 PNG。"
+        "含图表设计推理、自动修复、洞察生成、自评和质量评分。"
         "支持：柱状/折线/饼图/散点/热力图/箱线/小提琴/直方/矩形树图/"
         "词云/网络图/K线/华夫/日历热力/山脊线/韦恩/桑基/旭日/气泡/漏斗/瀑布/面积图。"
     )
@@ -55,6 +56,16 @@ class PythonChartSkill(Skill):
             "description": "业务背景，帮助生成更贴切的图表标题和标注",
             "default": "",
         },
+        "enable_critique": {
+            "type": "boolean",
+            "description": "启用图表质量自评",
+            "default": True,
+        },
+        "enable_adversarial": {
+            "type": "boolean",
+            "description": "启用红队挑战",
+            "default": True,
+        },
     }
 
     async def execute(self, params: dict, context: dict | None = None) -> dict:
@@ -63,6 +74,8 @@ class PythonChartSkill(Skill):
         chart_type = params.get("chart_type", "auto")
         color_theme = params.get("color_theme", "business")
         biz_context = params.get("context", "")
+        enable_critique = params.get("enable_critique", True)
+        enable_adversarial = params.get("enable_adversarial", True)
 
         if not data and not question:
             return {"result": "", "error": "data 或 question 参数不能同时为空"}
@@ -91,6 +104,23 @@ class PythonChartSkill(Skill):
                     except Exception:
                         df = pd.DataFrame()
 
+            # ── CoT: Chart design reasoning ───────────────────────────────────
+            cot_messages = [
+                {"role": "system", "content": "你是数据可视化专家。在生成图表前先分析数据特征，规划最佳图表设计方案。"},
+                {"role": "user", "content": f"""请分析以下可视化需求，规划图表设计方案。
+
+需求：{full_question}
+图表类型偏好：{chart_type}
+配色主题：{color_theme}
+
+请先回答：
+1. 数据最适合用什么图表类型展示？
+2. 关键数据点有哪些需要在图表中标注？
+3. 配色和布局应注意什么？
+4. 可能存在的误导性风险是什么？"""},
+            ]
+            reasoning = await chat(cot_messages, temperature=0.3, max_tokens=600)
+
             result = await engine.render(
                 data=df if df is not None and not df.empty else pd.DataFrame(),
                 question=full_question,
@@ -110,6 +140,31 @@ class PythonChartSkill(Skill):
                 out["error"] = result.error[:400]
             if result.stdout:
                 out["stdout"] = result.stdout[:500]
+
+            # SOTA: Self-critique
+            if enable_critique and out.get("result"):
+                try:
+                    critique = await self_critique(
+                        draft=out["result"][:2000],
+                        topic=f"图表生成 - {question[:50]}",
+                        dimensions=["specificity", "structural_clarity", "audience_fit"],
+                    )
+                    out["quality_score"] = round(critique["overall_score"] * 10)
+                    out["critique"] = critique
+                except Exception as exc:
+                    logger.warning(f"PythonChart self-critique failed: {exc}")
+
+            # SOTA: Adversarial review
+            if enable_adversarial and out.get("result"):
+                try:
+                    adversarial = await adversarial_review(
+                        output=out["result"][:2000],
+                        topic=f"图表生成 - {question[:50]}",
+                    )
+                    out["adversarial"] = adversarial
+                except Exception as exc:
+                    logger.warning(f"PythonChart adversarial failed: {exc}")
+
             return out
 
         except ImportError:

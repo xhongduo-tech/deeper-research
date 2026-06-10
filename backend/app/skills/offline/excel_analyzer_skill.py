@@ -18,6 +18,7 @@ from pathlib import Path
 from app.skills.base import Skill
 from app.services.llm_service import chat_json, chat
 from app.services.model_router import get_model_router
+from app.skills.offline.sota_utils import self_critique, adversarial_review
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +52,10 @@ _INJECTED_LIBS_DOC = """\
 class ExcelAnalyzerSkill(Skill):
     name = "analyze_excel"
     description = (
-        "对上传的 Excel（xlsx/xlsb/xls）、CSV、ODS 文件执行高精度分析：\n"
-        "• 多工作表读取与汇总\n"
-        "• Decimal/mpmath 精确数值计算（金额、比率、增长率）\n"
-        "• 自动检测维度/KPI列，生成排名/透视/趋势/相关性分析\n"
-        "• 生成 matplotlib/seaborn 可视化图表（base64 PNG）\n"
-        "• 返回 Markdown 格式分析报告 + 精确数值"
+        "SOTA Excel高精度分析：对上传的 Excel/CSV/ODS 文件执行多表读取、精确数值计算、"
+        "排名/透视/趋势/相关性分析，生成专业可视化图表。"
+        "含代码自动生成、沙箱执行、自动修复、洞察生成、自评和质量评分。"
+        "返回 Markdown 分析报告 + 精确数值 + 质量评分"
     )
     category = "data"
     parameters = {
@@ -83,6 +82,16 @@ class ExcelAnalyzerSkill(Skill):
             "description": "启用高精度模式：所有数值用 Decimal(28位) 重算（默认 true）",
             "default": True,
         },
+        "enable_critique": {
+            "type": "boolean",
+            "description": "启用分析结果质量自评",
+            "default": True,
+        },
+        "enable_adversarial": {
+            "type": "boolean",
+            "description": "启用红队挑战",
+            "default": True,
+        },
     }
 
     async def execute(self, params: dict, context: dict | None = None) -> dict:
@@ -91,6 +100,8 @@ class ExcelAnalyzerSkill(Skill):
         sheet_name = (params.get("sheet_name") or "").strip()
         biz_context = params.get("context", "")
         precision_mode = params.get("precision_mode", True)
+        enable_critique = params.get("enable_critique", True)
+        enable_adversarial = params.get("enable_adversarial", True)
 
         if not file_path:
             return {"result": "", "error": "file_path 不能为空"}
@@ -102,8 +113,11 @@ class ExcelAnalyzerSkill(Skill):
         if df is None or df.empty:
             return {"result": "文件读取失败或数据为空", "error": "empty_dataframe"}
 
+        # 1.5 CoT: Analyze data characteristics and plan analysis strategy
+        reasoning = await self._cot_plan(df, meta, question, biz_context)
+
         # 2. Generate analysis code
-        code = await self._generate_code(df, meta, question, biz_context, precision_mode)
+        code = await self._generate_code(df, meta, question, biz_context, precision_mode, reasoning)
 
         # 3. Execute in full-library sandbox
         exec_result = await self._execute(df, meta, code, file_path)
@@ -120,7 +134,33 @@ class ExcelAnalyzerSkill(Skill):
         insight = await self._generate_insight(exec_result, question, df)
 
         # 6. Build output
-        return self._build_output(exec_result, code, insight, meta, df)
+        out = self._build_output(exec_result, code, insight, meta, df)
+
+        # SOTA: Self-critique
+        if enable_critique and out.get("result"):
+            try:
+                critique = await self_critique(
+                    draft=out["result"][:3000],
+                    topic=f"Excel分析 - {question[:50]}",
+                    dimensions=["data_grounding", "logical_rigor", "specificity"],
+                )
+                out["quality_score"] = round(critique["overall_score"] * 10)
+                out["critique"] = critique
+            except Exception as exc:
+                logger.warning(f"ExcelAnalyzer self-critique failed: {exc}")
+
+        # SOTA: Adversarial review
+        if enable_adversarial and out.get("result"):
+            try:
+                adv = await adversarial_review(
+                    output=out["result"][:3000],
+                    topic=f"Excel分析 - {question[:50]}",
+                )
+                out["adversarial"] = adv
+            except Exception as exc:
+                logger.warning(f"ExcelAnalyzer adversarial failed: {exc}")
+
+        return out
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -146,6 +186,44 @@ class ExcelAnalyzerSkill(Skill):
             logger.warning(f"ExcelAnalyzer: load failed {file_path}: {e}")
             return None, {}
 
+    async def _cot_plan(self, df, meta: dict, question: str, biz_context: str) -> str:
+        """CoT: Analyze data characteristics and plan analysis strategy before code generation."""
+        shape = df.shape
+        numeric_cols = df.select_dtypes(include="number").columns.tolist()
+        cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
+        date_cols = df.select_dtypes(include=["datetime64"]).columns.tolist()
+        sample = df.head(5).to_dict(orient="records")
+
+        prompt = f"""你是数据分析策略专家。请根据数据特征和用户需求，规划最佳分析策略。
+
+数据规模：{shape[0]}行 × {shape[1]}列
+数值列：{numeric_cols[:10]}
+分类列：{cat_cols[:10]}
+时间列：{date_cols[:5]}
+样本：{sample}
+
+用户问题：{question}
+业务背景：{biz_context or '无'}
+
+请回答：
+1. 数据有哪些关键特征？
+2. 最适合的分析方法是什么？
+3. 应该生成什么类型的图表？
+4. 需要注意的数据质量问题？"""
+
+        try:
+            messages = [
+                {"role": "system", "content": "你是数据分析策略专家，擅长根据数据特征规划分析方案。"},
+                {"role": "user", "content": prompt},
+            ]
+            router = get_model_router()
+            model, base_url, api_key = router.route_for_chat(agent_type="quinn", messages=messages)
+            return await chat(messages=messages, model=model, base_url=base_url, api_key=api_key,
+                              temperature=0.3, max_tokens=600)
+        except Exception as e:
+            logger.debug(f"ExcelAnalyzer CoT failed: {e}")
+            return ""
+
     async def _generate_code(
         self,
         df,
@@ -153,6 +231,7 @@ class ExcelAnalyzerSkill(Skill):
         question: str,
         biz_context: str,
         precision_mode: bool,
+        reasoning: str = "",
     ) -> str:
         import pandas as pd
         shape = df.shape
@@ -189,6 +268,8 @@ for col in numeric_cols:
 ```
 """
 
+        reasoning_block = f"\n\n## 分析策略规划\n{reasoning[:500]}" if reasoning else ""
+
         prompt = f"""你是精确数据分析专家。请为以下 Excel/CSV 数据生成完整的 Python 分析和可视化代码。
 
 ## 数据信息
@@ -200,7 +281,7 @@ for col in numeric_cols:
 
 ## 分析问题
 {question}
-{f"业务背景：{biz_context}" if biz_context else ""}
+{f"业务背景：{biz_context}" if biz_context else ""}{reasoning_block}
 
 {_INJECTED_LIBS_DOC}
 {precision_note}

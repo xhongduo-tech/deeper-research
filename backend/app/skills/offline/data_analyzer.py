@@ -26,6 +26,7 @@ import logging
 from app.skills.base import Skill
 from app.services.llm_service import chat_json, chat
 from app.services.sandbox import execute_python
+from app.skills.offline.sota_utils import self_critique, adversarial_review
 
 logger = logging.getLogger(__name__)
 
@@ -249,8 +250,9 @@ pct = (Decimal(str(part)) / Decimal(str(total)) * 100).quantize(Decimal('0.01'),
 class DataAnalyzerSkill(Skill):
     name = "analyze_data"
     description = (
-        "对表格或数值数据执行深度统计分析：趋势、增长率、排名、相关性、异常检测、"
-        "分布分析、对比、透视表、预测。输出 markdown 摘要 + 表格 + 图表数据。"
+        "SOTA数据深度分析：对表格数据执行统计/趋势/排名/相关性/异常检测/分布/对比/透视/预测分析。"
+        "含CoT策略选择、代码自动生成、沙箱执行、自动修复、结果验证、自评和红队挑战。"
+        "输出 markdown 摘要 + 表格 + 图表数据 + 质量评分"
     )
     category = "data"
     parameters = {
@@ -272,6 +274,16 @@ class DataAnalyzerSkill(Skill):
             "description": "业务背景说明，帮助生成更准确的解读",
             "default": "",
         },
+        "enable_critique": {
+            "type": "boolean",
+            "description": "启用分析结果质量自评",
+            "default": True,
+        },
+        "enable_adversarial": {
+            "type": "boolean",
+            "description": "启用红队挑战",
+            "default": True,
+        },
     }
 
     async def execute(self, params: dict, context: dict | None = None) -> dict:
@@ -279,6 +291,8 @@ class DataAnalyzerSkill(Skill):
         question = (params.get("question") or "").strip()
         analysis_type = params.get("analysis_type", "auto")
         biz_context = params.get("context", "")
+        enable_critique = params.get("enable_critique", True)
+        enable_adversarial = params.get("enable_adversarial", True)
 
         if not data or not question:
             return {"result": "", "error": "data 和 question 参数不能为空"}
@@ -309,7 +323,7 @@ class DataAnalyzerSkill(Skill):
                 exec_result = await _run_code(repaired_code, data_preview)
                 code = repaired_code
 
-        return _build_output(exec_result, code, strategy, question)
+        return await _build_output_sota(exec_result, code, strategy, question, enable_critique, enable_adversarial)
 
 
 # ---------------------------------------------------------------------------
@@ -539,4 +553,35 @@ def _build_output(exec_result: dict, code: str, strategy: str, question: str) ->
 
     if error and not result_text:
         out["error"] = error[:400]
+    return out
+
+
+async def _build_output_sota(exec_result: dict, code: str, strategy: str, question: str, enable_critique: bool, enable_adversarial: bool) -> dict:
+    """SOTA-enhanced output builder with optional self-critique and adversarial review."""
+    out = _build_output(exec_result, code, strategy, question)
+
+    # SOTA: Self-critique on analysis quality
+    if enable_critique and out.get("result"):
+        try:
+            critique = await self_critique(
+                draft=out["result"][:3000],
+                topic=f"数据分析 - {strategy}",
+                dimensions=["data_grounding", "logical_rigor", "specificity"],
+            )
+            out["quality_score"] = round(critique["overall_score"] * 10)
+            out["critique"] = critique
+        except Exception as exc:
+            logger.debug("DataAnalyzer self-critique failed: %s", exc)
+
+    # SOTA: Adversarial review
+    if enable_adversarial and out.get("result"):
+        try:
+            adv = await adversarial_review(
+                output=out["result"][:3000],
+                topic=f"数据分析 - {strategy}",
+            )
+            out["adversarial"] = adv
+        except Exception as exc:
+            logger.debug("DataAnalyzer adversarial failed: %s", exc)
+
     return out

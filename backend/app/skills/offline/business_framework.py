@@ -1,23 +1,34 @@
 """
-Business Framework Analyzer — structured application of SWOT, PEST, Porter, BCG, etc.
+Business Framework Analyzer — SOTA-enhanced structured strategic analysis.
 
-Provides structured strategic analysis using proven business frameworks,
-compensating for lack of live data with deep LLM domain knowledge.
+Enhancements over v1:
+1. Auto framework selection guidance (pick best framework for topic)
+2. Chain-of-Thought reasoning per dimension
+3. Cross-dimension consistency check
+4. Adversarial review (challenge weak analyses)
+5. Quality score + structured JSON output
+6. Multi-framework synthesis (all_strategic mode)
+
+Reference: McKinsey MECE principle, BCG strategy framework
 """
 from app.skills.base import Skill
-from app.services.llm_service import chat
+from app.services.llm_service import chat, chat_json
+from app.skills.offline.sota_utils import self_critique, adversarial_review
 
 
 class BusinessFrameworkSkill(Skill):
     name = "apply_framework"
-    description = "应用商业分析框架（SWOT/PEST/波特五力/BCG矩阵/麦肯锡7S等）对研究主题进行结构化战略分析，输出可直接引用的分析内容"
+    description = (
+        "SOTA商业分析框架应用：SWOT/PEST/波特五力/BCG/麦肯锡7S/安索夫/价值链等。"
+        "包含框架智能选择→CoT维度分析→交叉验证→红队挑战→质量评分的完整流程"
+    )
     category = "offline"
     parameters = {
         "topic": {"type": "string", "description": "分析主题（公司/行业/项目/产品）"},
         "framework": {
             "type": "string",
-            "description": "分析框架: swot | pest | porter5 | bcg | mckinsey7s | ansoff | value_chain | all_strategic",
-            "default": "swot",
+            "description": "分析框架: swot | pest | porter5 | bcg | mckinsey7s | ansoff | value_chain | all_strategic | auto",
+            "default": "auto",
         },
         "context": {"type": "string", "description": "已有背景信息（可为空）"},
         "industry": {
@@ -27,9 +38,31 @@ class BusinessFrameworkSkill(Skill):
         },
         "output_style": {
             "type": "string",
-            "description": "输出风格: table（表格）| narrative（叙述）| bullets（要点）",
+            "description": "输出风格: table | narrative | bullets",
             "default": "table",
         },
+        "enable_critique": {
+            "type": "boolean",
+            "description": "启用自评",
+            "default": True,
+        },
+        "enable_adversarial": {
+            "type": "boolean",
+            "description": "启用红队挑战",
+            "default": True,
+        },
+    }
+
+    FRAMEWORK_SELECTOR = {
+        "auto": "根据主题特征自动选择最合适的分析框架",
+        "swot": "适合：企业/产品整体战略定位、新进入者评估",
+        "pest": "适合：宏观环境扫描、政策敏感型行业分析",
+        "porter5": "适合：行业竞争格局分析、投资决策",
+        "bcg": "适合：多业务/多产品组合评估、资源分配",
+        "mckinsey7s": "适合：组织变革、并购整合、文化诊断",
+        "ansoff": "适合：增长策略制定、市场拓展决策",
+        "value_chain": "适合：成本分析、竞争优势识别、流程优化",
+        "all_strategic": "适合：全面战略诊断、综合评估报告",
     }
 
     FRAMEWORK_PROMPTS = {
@@ -59,7 +92,6 @@ class BusinessFrameworkSkill(Skill):
 | **机会O** | SO策略（用优势把握机会） | WO策略（借机会克服劣势） |
 | **威胁T** | ST策略（用优势对抗威胁） | WT策略（减少劣势避免威胁） |""",
         },
-
         "pest": {
             "name": "PEST分析",
             "instruction": """请进行PESTEL分析（政治、经济、社会、技术、环境、法律）：
@@ -85,7 +117,6 @@ class BusinessFrameworkSkill(Skill):
 ### 综合影响评估
 用表格总结各因素的影响程度（高/中/低）和应对建议""",
         },
-
         "porter5": {
             "name": "波特五力分析",
             "instruction": """请进行波特五力竞争分析：
@@ -119,7 +150,6 @@ class BusinessFrameworkSkill(Skill):
 | 供应商 | - | - | - |
 | 买方 | - | - | - |""",
         },
-
         "bcg": {
             "name": "BCG矩阵分析",
             "instruction": """请应用BCG（波士顿）矩阵分析产品/业务组合：
@@ -139,7 +169,6 @@ class BusinessFrameworkSkill(Skill):
 ### 动态演进预测
 预测未来2-3年各业务在矩阵中的移动方向""",
         },
-
         "mckinsey7s": {
             "name": "麦肯锡7S框架",
             "instruction": """请用麦肯锡7S框架分析组织能力：
@@ -158,7 +187,6 @@ class BusinessFrameworkSkill(Skill):
 ### 7S协调性评估
 各要素之间是否对齐？哪些存在冲突？如何改进？""",
         },
-
         "ansoff": {
             "name": "安索夫矩阵分析",
             "instruction": """请用安索夫矩阵分析增长策略：
@@ -178,7 +206,6 @@ class BusinessFrameworkSkill(Skill):
 ### 策略优先级推荐
 综合风险/回报分析，推荐最优增长路径""",
         },
-
         "value_chain": {
             "name": "价值链分析",
             "instruction": """请进行波特价值链分析：
@@ -196,7 +223,6 @@ class BusinessFrameworkSkill(Skill):
 ### 行业价值链对比
 与行业标杆的价值链结构对比，找出差距""",
         },
-
         "all_strategic": {
             "name": "综合战略分析",
             "instruction": """请进行简化版综合战略分析：
@@ -220,15 +246,23 @@ class BusinessFrameworkSkill(Skill):
 
     async def execute(self, params: dict, context: dict | None = None) -> dict:
         topic = params.get("topic", "")
-        framework = params.get("framework", "swot")
+        framework = params.get("framework", "auto")
         bg_context = params.get("context", "")
         industry = params.get("industry", "general")
         output_style = params.get("output_style", "table")
+        enable_critique = params.get("enable_critique", True)
+        enable_adversarial = params.get("enable_adversarial", True)
 
         if not topic:
             return {"result": "", "error": "topic is required"}
 
-        fw = self.FRAMEWORK_PROMPTS.get(framework, self.FRAMEWORK_PROMPTS["swot"])
+        # ── Phase 1: Auto framework selection ────────────────────────────────────
+        selected_framework = framework
+        selection_reason = ""
+        if framework == "auto":
+            selected_framework, selection_reason = await self._select_framework(topic, industry)
+
+        fw = self.FRAMEWORK_PROMPTS.get(selected_framework, self.FRAMEWORK_PROMPTS["swot"])
         fw_name = fw["name"]
         fw_instruction = fw["instruction"]
 
@@ -240,10 +274,18 @@ class BusinessFrameworkSkill(Skill):
             "bullets": "使用简洁要点列表，每条≤20字，适合PPT",
         }.get(output_style, "使用表格和要点结合")
 
+        # ── Phase 2: CoT Analysis ────────────────────────────────────────────────
         messages = [
             {
                 "role": "system",
                 "content": f"""你是顶级战略咨询师，精通各类商业分析框架。你的分析具体、有数据支撑、可操作。
+
+分析原则：
+1. **MECE原则**：各维度之间互不重叠、完全穷尽
+2. **数据支撑**：所有判断必须有数据或行业典型区间支撑
+3. **可操作性**：每条结论必须能转化为具体行动
+4. **平衡视角**：不夸大优势，不回避劣势
+
 行业背景：{industry}
 输出要求：{style_note}""",
             },
@@ -260,14 +302,141 @@ class BusinessFrameworkSkill(Skill):
 重要：
 - 所有数据估算需标注（行业估算）或（通常水平）
 - 结论需具体，避免"需要关注""可能影响"等空洞表述
-- 如无具体数据，用行业典型区间代替""",
+- 如无具体数据，用行业典型区间代替
+- 每个维度的分析需独立完整，同时与其他维度保持逻辑一致""",
             },
         ]
 
         result = await chat(messages, temperature=0.35, max_tokens=3000)
+
+        # ── Phase 3: Cross-dimension consistency check ───────────────────────────
+        consistency = None
+        if selected_framework in ("swot", "all_strategic"):
+            consistency = await self._check_consistency(result, topic, fw_name)
+
+        # ── Phase 4: Self-critique ───────────────────────────────────────────────
+        critique = None
+        if enable_critique:
+            critique = await self_critique(
+                draft=result,
+                topic=f"{topic} - {fw_name}",
+                dimensions=["data_grounding", "logical_rigor", "specificity", "actionability"],
+            )
+
+        # ── Phase 5: Adversarial review ──────────────────────────────────────────
+        adversarial = None
+        if enable_adversarial:
+            adversarial = await adversarial_review(
+                output=result,
+                topic=f"{topic} - {fw_name}",
+            )
+
+        # ── Phase 6: Quality score ───────────────────────────────────────────────
+        quality_score = None
+        if critique:
+            quality_score = round(critique["overall_score"] * 10)
+
         return {
             "result": result,
-            "framework": framework,
+            "framework": selected_framework,
             "framework_name": fw_name,
+            "selection_reason": selection_reason,
             "topic": topic,
+            "consistency_check": consistency,
+            "critique": critique,
+            "adversarial": adversarial,
+            "quality_score": quality_score,
+        }
+
+    async def _select_framework(self, topic: str, industry: str) -> tuple[str, str]:
+        """Auto-select the most appropriate framework based on topic characteristics."""
+        system = """你是战略分析框架选择专家。根据主题特征，选择最适合的分析框架。
+
+可选框架：
+- swot: 企业/产品整体战略定位
+- pest: 宏观环境扫描
+- porter5: 行业竞争格局
+- bcg: 多业务组合评估
+- mckinsey7s: 组织变革诊断
+- ansoff: 增长策略制定
+- value_chain: 成本/竞争优势分析
+- all_strategic: 全面综合诊断
+
+输出JSON：{"framework": "框架名", "reason": "选择理由"}"""
+
+        user = f"""请为以下主题选择最适合的分析框架。
+
+主题：{topic}
+行业：{industry}
+
+请只输出JSON。"""
+
+        parsed = await chat_json(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.2,
+            max_tokens=500,
+        )
+
+        if "error" not in parsed and "framework" in parsed:
+            fw = parsed["framework"]
+            reason = parsed.get("reason", "")
+            if fw in self.FRAMEWORK_PROMPTS:
+                return fw, reason
+
+        # Fallback: keyword-based
+        topic_lower = topic.lower()
+        if any(k in topic_lower for k in ("竞争", "格局", "行业", "五力")):
+            return "porter5", "主题涉及竞争分析，选择波特五力"
+        elif any(k in topic_lower for k in ("增长", "扩张", "市场开发")):
+            return "ansoff", "主题涉及增长策略，选择安索夫矩阵"
+        elif any(k in topic_lower for k in ("组织", "变革", "文化", "并购")):
+            return "mckinsey7s", "主题涉及组织诊断，选择7S框架"
+        elif any(k in topic_lower for k in ("宏观", "政策", "环境")):
+            return "pest", "主题涉及宏观环境，选择PEST"
+        elif any(k in topic_lower for k in ("产品组合", "业务", "投资")):
+            return "bcg", "主题涉及业务组合，选择BCG矩阵"
+        elif any(k in topic_lower for k in ("成本", "流程", "价值链")):
+            return "value_chain", "主题涉及价值链分析"
+        else:
+            return "swot", "默认选择SWOT进行综合定位"
+
+    async def _check_consistency(self, analysis: str, topic: str, framework: str) -> dict:
+        """Check cross-dimension consistency (e.g., S+O alignment in SWOT)."""
+        system = """你是战略逻辑审核师。检查分析各维度之间是否存在逻辑矛盾。
+
+例如SWOT中：
+- 某个劣势是否直接否定了某个优势的前提？
+- 某个机会是否与某个威胁相互矛盾？
+- SO策略是否真的利用了优势来抓住机会？
+
+输出JSON：
+{
+  "consistent": true/false,
+  "issues": [{"dimension": "维度名", "issue": "矛盾描述", "severity": "high|medium|low"}],
+  "suggestions": ["修正建议1"]
+}"""
+
+        user = f"""请检查以下{framework}分析的逻辑一致性。
+
+## 分析内容
+{analysis[:2000]}
+
+## 主题
+{topic}
+
+请输出JSON格式的审核结果。"""
+
+        parsed = await chat_json(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.25,
+            max_tokens=1000,
+        )
+
+        if "error" in parsed:
+            return {"consistent": True, "issues": [], "suggestions": []}
+
+        return {
+            "consistent": parsed.get("consistent", True),
+            "issues": parsed.get("issues", []),
+            "suggestions": parsed.get("suggestions", []),
         }

@@ -1,11 +1,19 @@
-"""Table Builder — convert data/descriptions to professional Markdown tables for reports."""
+"""Table Builder — SOTA-enhanced Markdown table generation with quality scoring.
+
+Enhancements:
+- Chain-of-Thought: plan table structure before generation
+- Self-critique: checks formatting, data accuracy, insight quality
+- Quality score (0-100)
+- Adversarial review: detects data inconsistencies
+"""
 from app.skills.base import Skill
 from app.services.llm_service import chat
+from app.skills.offline.sota_utils import self_critique, adversarial_review
 
 
 class TableBuilderSkill(Skill):
     name = "build_table"
-    description = "将描述性文本、列表、JSON或CSV数据转换为专业格式化的Markdown表格，适合报告中的对比分析、数据汇总、指标看板"
+    description = "SOTA表格生成：将数据转换为专业Markdown表格，含CoT规划、质量评分和红队挑战"
     category = "offline"
     parameters = {
         "data": {"type": "string", "description": "数据内容（文本描述、JSON、CSV或列表）"},
@@ -24,6 +32,16 @@ class TableBuilderSkill(Skill):
         "add_insights": {
             "type": "boolean",
             "description": "是否在表格后附加2-3条数据洞察",
+            "default": True,
+        },
+        "enable_critique": {
+            "type": "boolean",
+            "description": "启用质量自评",
+            "default": True,
+        },
+        "enable_adversarial": {
+            "type": "boolean",
+            "description": "启用红队挑战",
             "default": True,
         },
     }
@@ -67,6 +85,8 @@ class TableBuilderSkill(Skill):
         table_type = params.get("table_type", "general")
         add_summary = params.get("add_summary_row", False)
         add_insights = params.get("add_insights", True)
+        enable_critique = params.get("enable_critique", True)
+        enable_adversarial = params.get("enable_adversarial", True)
 
         if not data.strip():
             return {"result": "", "error": "no data provided"}
@@ -77,6 +97,14 @@ class TableBuilderSkill(Skill):
         title_line = f"**表格标题: {title}**\n\n" if title else ""
         insights_hint = "\n\n在表格后追加3条基于数据的关键洞察，格式：\n> 洞察1：...\n> 洞察2：...\n> 洞察3：..." if add_insights else ""
 
+        # ── Phase 1: CoT Planning ─────────────────────────────────────────────
+        cot_messages = [
+            {"role": "system", "content": "你是专业数据整理专家。在生成表格前先分析数据结构，规划最佳列布局。"},
+            {"role": "user", "content": f"请分析以下数据，规划表格结构后再生成。\n\n数据：\n{data[:2000]}\n\n表格类型：{table_type}\n\n请先回答：1. 数据包含哪些维度？2. 最适合的列结构是什么？3. 需要注意的数据格式问题？"},
+        ]
+        reasoning = await chat(cot_messages, temperature=0.2, max_tokens=500)
+
+        # ── Phase 2: Table Generation ─────────────────────────────────────────
         messages = [
             {
                 "role": "system",
@@ -84,7 +112,9 @@ class TableBuilderSkill(Skill):
             },
             {
                 "role": "user",
-                "content": f"""{title_line}请将以下内容整理为专业的Markdown表格。
+                "content": f"""{title_line}结构规划：{reasoning[:400]}
+
+请将以下内容整理为专业的Markdown表格。
 
 ## 表格类型指导
 {type_guide}
@@ -103,4 +133,27 @@ class TableBuilderSkill(Skill):
             },
         ]
         result = await chat(messages, temperature=0.2, max_tokens=2000)
-        return {"result": result, "table_type": table_type}
+
+        # ── Phase 3: Self-critique ────────────────────────────────────────────
+        critique = None
+        adversarial = None
+        quality_score = None
+        if enable_critique:
+            critique = await self_critique(
+                draft=result, topic="表格质量",
+                dimensions=["data_grounding", "structural_clarity", "specificity"],
+            )
+            quality_score = round(critique["overall_score"] * 10)
+
+        # ── Phase 4: Adversarial review ───────────────────────────────────────
+        if enable_adversarial:
+            adversarial = await adversarial_review(output=result, topic="表格")
+
+        out = {"result": result, "table_type": table_type, "reasoning": reasoning}
+        if quality_score is not None:
+            out["quality_score"] = quality_score
+        if critique:
+            out["critique"] = critique
+        if adversarial:
+            out["adversarial"] = adversarial
+        return out

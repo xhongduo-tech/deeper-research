@@ -1,12 +1,25 @@
-"""Report Section Writer — write professional report sections from findings + context.
+"""Report Section Writer — SOTA-enhanced professional report section generation.
 
-Enhanced with document-type-aware format rules so sections conform to industry/national
-standards for each document category (学术论文, 述职报告, 法定公文, etc.).
+Enhancements over v1:
+1. Chain-of-Thought planning: outline → content
+2. Self-critique with structured scoring (8 dimensions)
+3. Adversarial red-team review
+4. Quality-gated rewrite loop
+5. Quality score output (0-100)
+6. Persona rotation: writer → critic → rewriter → polisher
+
+Reference: Anthropic's "Building effective agents", OpenAI's "6 strategies"
 """
 from app.skills.base import Skill
 from app.services.llm_service import chat
+from app.skills.offline.sota_utils import (
+    cot_write,
+    self_critique,
+    adversarial_review,
+    rewrite_with_critique,
+    quality_gate,
+)
 
-# Quick lookup: report_type keyword → formatting overlay instruction
 REPORT_TYPE_FORMAT_RULES: dict[str, str] = {
     "学术论文": (
         "严格学术规范：客观第三人称，每个论点有文献或数据支撑，"
@@ -54,7 +67,10 @@ REPORT_TYPE_FORMAT_RULES: dict[str, str] = {
 
 class ReportSectionWriterSkill(Skill):
     name = "write_section"
-    description = "基于研究发现和知识库上下文，撰写高质量专业报告章节，支持执行摘要、深度分析、风险评估、建议行动等类型，输出格式适配PPT/Word/Excel"
+    description = (
+        "SOTA报告章节写作：基于CoT规划→写作→自评→红队挑战→重写→润色的"
+        "多轮精写流程，输出带质量分数的专业报告章节"
+    )
     category = "offline"
     parameters = {
         "section_type": {
@@ -70,12 +86,42 @@ class ReportSectionWriterSkill(Skill):
             "description": "输出格式: word|ppt|excel，影响行文风格",
             "default": "word",
         },
+        "enable_cot": {
+            "type": "boolean",
+            "description": "启用Chain-of-Thought规划",
+            "default": True,
+        },
+        "enable_critique": {
+            "type": "boolean",
+            "description": "启用自评+重写",
+            "default": True,
+        },
+        "enable_adversarial": {
+            "type": "boolean",
+            "description": "启用红队挑战",
+            "default": True,
+        },
+        "quality_threshold": {
+            "type": "number",
+            "description": "质量通过门槛(0-10)，低于此分数触发重写",
+            "default": 7.0,
+        },
     }
 
     SECTION_CONFIGS = {
         "exec_summary": {
             "name": "执行摘要",
-            "role": "你是资深报告撰写专家，擅长将复杂分析浓缩为高管一目了然的摘要",
+            "writer_persona": "资深报告撰写专家，擅长将复杂分析浓缩为高管一目了然的摘要",
+            "critic_persona": "挑剔的高管读者，时间有限，要求每句话都有信息增量",
+            "thinking_prompt": """请先为执行摘要制定写作大纲。
+
+思考步骤：
+1. 从findings中提取最重要的3-5个数据点
+2. 识别最关键的1-2个风险
+3. 确定优先级最高的2-3个行动建议
+4. 规划每部分的篇幅（背景1-2句，发现3-5条，风险1-2条，建议2-3条，结论1句）
+
+输出你的思考过程和大纲。""",
             "instruction": """撰写执行摘要，供高层决策者在2分钟内获取全貌。
 
 结构要求：
@@ -89,7 +135,18 @@ class ReportSectionWriterSkill(Skill):
         },
         "analysis": {
             "name": "深度分析",
-            "role": "你是专业分析师，擅长从数据中挖掘洞察，构建严密的分析框架",
+            "writer_persona": "专业分析师，擅长从数据中挖掘洞察，构建严密的分析框架",
+            "critic_persona": "严谨的数据科学家，要求每个推论都有数据支撑，不接受直觉判断",
+            "thinking_prompt": """请先为深度分析章节制定分析框架。
+
+思考步骤：
+1. 确定分析角度（财务/市场/运营/技术等）
+2. 从findings中提取关键数据点，标注来源
+3. 构建因果链条：现象→原因→影响
+4. 识别2-3条深层洞察（非显而易见的）
+5. 规划表格呈现方式
+
+输出你的分析框架和思考过程。""",
             "instruction": """撰写深度分析章节，展现专业分析能力。
 
 结构要求：
@@ -105,7 +162,18 @@ class ReportSectionWriterSkill(Skill):
         },
         "risk": {
             "name": "风险评估",
-            "role": "你是风险管理专家，擅长系统识别、量化和管理各类风险",
+            "writer_persona": "风险管理专家，擅长系统识别、量化和管理各类风险",
+            "critic_persona": "保守的首席风险官，要求每个风险都有量化影响和具体缓释方案",
+            "thinking_prompt": """请先为风险评估制定风险识别框架。
+
+思考步骤：
+1. 从findings中识别所有潜在风险点
+2. 按概率×影响对每个风险评级（高/中/低）
+3. 确定TOP 3高风险项
+4. 为每个高风险设计缓释方案
+5. 规划风险矩阵表格
+
+输出你的风险识别框架。""",
             "instruction": """撰写风险评估章节，为决策提供风险视角。
 
 结构要求：
@@ -126,7 +194,18 @@ class ReportSectionWriterSkill(Skill):
         },
         "recommendation": {
             "name": "建议与行动计划",
-            "role": "你是管理顾问，擅长将分析洞察转化为清晰可执行的战略建议",
+            "writer_persona": "管理顾问，擅长将分析洞察转化为清晰可执行的战略建议",
+            "critic_persona": "务实的项目总监，要求每条建议都有责任人、时间节点和可量化效果",
+            "thinking_prompt": """请先为建议章节制定优先级框架。
+
+思考步骤：
+1. 从findings中提取所有可行的改进方向
+2. 按影响力×可行性对建议排序（影响大/易实施优先）
+3. 为每条核心建议设计行动步骤
+4. 确定责任方和时间节点
+5. 规划实施路线图表格
+
+输出你的建议优先级框架。""",
             "instruction": """撰写建议与行动计划章节，为组织提供清晰的行动路线。
 
 结构要求：
@@ -150,7 +229,18 @@ class ReportSectionWriterSkill(Skill):
         },
         "conclusion": {
             "name": "结论",
-            "role": "你是资深报告编辑，擅长将整体研究提炼为有力结论",
+            "writer_persona": "资深报告编辑，擅长将整体研究提炼为有力结论",
+            "critic_persona": "要求严格的董事会秘书，要求结论简洁有力，不重复前文",
+            "thinking_prompt": """请先为结论制定提炼框架。
+
+思考步骤：
+1. 回顾全文最重要的3个发现
+2. 确定核心判断（最重要的单一结论）
+3. 识别1-2个未来趋势/展望
+4. 设计行动呼吁
+5. 确保结论不重复前文，而是综合提升
+
+输出你的结论提炼框架。""",
             "instruction": """撰写结论章节，为整份报告画上有力的句点。
 
 结构要求：
@@ -163,7 +253,18 @@ class ReportSectionWriterSkill(Skill):
         },
         "data_table": {
             "name": "数据表格",
-            "role": "你是数据分析师，擅长将复杂数据整理为清晰专业的表格",
+            "writer_persona": "数据分析师，擅长将复杂数据整理为清晰专业的表格",
+            "critic_persona": "追求精确的数据审计师，要求数字格式统一、口径清晰、无遗漏",
+            "thinking_prompt": """请先为数据表格制定整理方案。
+
+思考步骤：
+1. 确定表格的核心维度和指标
+2. 统一数值格式（金额/百分比/数量）
+3. 设计表头（含单位）
+4. 规划合计/平均行
+5. 准备2-3条关键数据解读
+
+输出你的表格整理方案。""",
             "instruction": """将数据整理为专业的数据表格章节。
 
 结构要求：
@@ -179,7 +280,18 @@ class ReportSectionWriterSkill(Skill):
         },
         "comparison": {
             "name": "对比分析",
-            "role": "你是战略分析师，擅长构建多维度对比框架",
+            "writer_persona": "战略分析师，擅长构建多维度对比框架",
+            "critic_persona": "公正的第三方评估师，要求对比客观、维度全面、不偏袒任何一方",
+            "thinking_prompt": """请先为对比分析制定框架。
+
+思考步骤：
+1. 确定对比对象和维度
+2. 为每个维度设计评分标准
+3. 收集各方在各维度上的表现数据
+4. 确定综合评价逻辑
+5. 规划对比表格
+
+输出你的对比分析框架。""",
             "instruction": """撰写对比分析章节，清晰呈现多方对比。
 
 结构要求：
@@ -201,20 +313,26 @@ class ReportSectionWriterSkill(Skill):
         report_type = params.get("report_type", "")
         target_words = int(params.get("target_words", 600))
         output_format = params.get("output_format", "word").lower()
+        enable_cot = params.get("enable_cot", True)
+        enable_critique = params.get("enable_critique", True)
+        enable_adversarial = params.get("enable_adversarial", True)
+        quality_threshold = params.get("quality_threshold", 7.0)
 
         config = self.SECTION_CONFIGS.get(section_type, self.SECTION_CONFIGS["analysis"])
         section_name = config["name"]
-        role = config["role"]
+        writer_persona = config["writer_persona"]
+        critic_persona = config["critic_persona"]
         instruction = config["instruction"]
+        thinking_prompt = config.get("thinking_prompt", "")
 
-        # ── 文档类型格式规则注入 ──────────────────────────────────────────────────
+        # Document type format rules
         doc_type_rule = ""
         for keyword, rule in REPORT_TYPE_FORMAT_RULES.items():
             if keyword in (report_type or ""):
                 doc_type_rule = f"\n\n**【{keyword}专用格式规范】**\n{rule}"
                 break
 
-        # Format-specific adjustments
+        # Format adjustments
         if output_format in ("ppt", "pptx", "powerpoint"):
             format_note = "\n\n**PPT格式要求**: 输出更简洁，要点不超过6条，数字加粗，避免长段文字，重点用列表呈现。"
         elif output_format in ("excel", "sheet", "xlsx", "xls"):
@@ -222,21 +340,37 @@ class ReportSectionWriterSkill(Skill):
         else:
             format_note = ""
 
-        rag_block = ""
-        if rag_context:
-            rag_block = f"\n\n**【知识库参考内容】**\n{rag_context[:2500]}"
+        rag_block = f"\n\n**【知识库参考内容】**\n{rag_context[:2500]}" if rag_context else ""
 
-        messages = [
+        format_rules = f"{doc_type_rule}{format_note}"
+
+        # ── Phase 1: CoT Planning (optional) ─────────────────────────────────────
+        thinking = ""
+        if enable_cot and thinking_prompt:
+            thinking = await chat(
+                [
+                    {"role": "system", "content": writer_persona},
+                    {"role": "user", "content": f"""{thinking_prompt}
+
+## 研究发现
+{findings[:2000] if findings else '（基于报告主题合理推断）'}
+{rag_block}"""},
+                ],
+                temperature=0.4,
+                max_tokens=1000,
+            )
+
+        # ── Phase 2: First Draft ─────────────────────────────────────────────────
+        thinking_block = f"\n\n**【写作大纲】**\n{thinking}\n\n请基于以上大纲撰写正文。" if thinking else ""
+
+        draft_messages = [
             {
                 "role": "system",
-                "content": (
-                    f"{role}。你正在为「{report_type}」类报告撰写「{section_name}」章节。"
-                    f"使用规范、简洁的商务中文。{doc_type_rule}"
-                ),
+                "content": f"{writer_persona}。你正在为「{report_type}」类报告撰写「{section_name}」章节。使用规范、简洁的商务中文。{format_rules}",
             },
             {
                 "role": "user",
-                "content": f"""请撰写「{section_name}」章节。
+                "content": f"""请撰写「{section_name}」章节。{thinking_block}
 
 ## 撰写要求
 {instruction}{format_note}
@@ -253,5 +387,98 @@ class ReportSectionWriterSkill(Skill):
 - 严格遵守上述文档类型格式规范（如有）""",
             },
         ]
-        result = await chat(messages, temperature=0.4, max_tokens=max(1200, target_words * 4))
-        return {"result": result}
+        draft = await chat(draft_messages, temperature=0.4, max_tokens=max(1200, target_words * 4))
+
+        if not enable_critique:
+            return {
+                "result": draft,
+                "thinking": thinking,
+                "quality_score": None,
+                "critique": None,
+                "adversarial": None,
+                "passes": 1,
+            }
+
+        # ── Phase 3: Self-Critique ───────────────────────────────────────────────
+        critique = await self_critique(
+            draft=draft,
+            topic=f"{report_type} - {section_name}",
+            persona=critic_persona,
+        )
+
+        # ── Phase 4: Adversarial Review (optional) ───────────────────────────────
+        adversarial = None
+        if enable_adversarial:
+            adversarial = await adversarial_review(
+                output=draft,
+                topic=f"{report_type} - {section_name}",
+            )
+
+        # ── Phase 5: Quality Gate & Rewrite ──────────────────────────────────────
+        overall_score = critique["overall_score"]
+        final = draft
+        passes = 1
+
+        if overall_score < quality_threshold:
+            # Rewrite based on critique
+            rewrite = await rewrite_with_critique(
+                draft=draft,
+                critique=critique,
+                topic=f"{report_type} - {section_name}",
+                persona=writer_persona,
+                format_rules=format_rules,
+            )
+            final = rewrite
+            passes = 2
+
+            # Re-critique after rewrite
+            critique2 = await self_critique(
+                draft=rewrite,
+                topic=f"{report_type} - {section_name}",
+                persona=critic_persona,
+            )
+            overall_score = critique2["overall_score"]
+            critique = critique2
+
+        # ── Phase 6: Final Polish ────────────────────────────────────────────────
+        if passes > 1 or overall_score >= quality_threshold:
+            polish = await self._polish(final, output_format, target_words)
+            final = polish
+
+        # Normalize score to 0-100
+        quality_score = round(overall_score * 10)
+
+        return {
+            "result": final,
+            "thinking": thinking,
+            "quality_score": quality_score,
+            "critique": critique,
+            "adversarial": adversarial,
+            "passes": passes,
+            "section_type": section_type,
+            "report_type": report_type,
+        }
+
+    async def _polish(self, text: str, output_format: str, word_count: int) -> str:
+        format_rules = {
+            "ppt": "将内容压缩为要点形式，每个要点≤25字，保留所有关键数据，去掉过渡语",
+            "word": "确保段落流畅，数字格式统一，小标题清晰，补充必要的过渡句",
+            "excel": "提炼为简洁的说明性段落，突出数字和指标，方便与表格数据配合",
+        }
+        rule = format_rules.get(output_format, format_rules["word"])
+        messages = [
+            {"role": "system", "content": "你是专业文字润色专家。专注于格式规范和表达精炼，不改变内容实质。"},
+            {
+                "role": "user",
+                "content": f"""请对以下内容进行最终润色。
+
+## 润色规则
+{rule}
+
+## 内容
+{text}
+
+直接输出润色后的内容。""",
+            },
+        ]
+        return await chat(messages, temperature=0.2, max_tokens=2000)

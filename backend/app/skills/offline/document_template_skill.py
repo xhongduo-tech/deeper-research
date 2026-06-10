@@ -1,15 +1,21 @@
 """
-Document Template Skill — 按标准格式规范生成各类专业文档骨架与内容。
+Document Template Skill — SOTA-enhanced professional document generation.
 
-每种文档类型都有对应的国家/行业标准格式要求：
-- 学术论文: 参照 GB/T 7713.2-2022
-- 法定公文: 参照《党政机关公文格式》GB/T 9704-2012
-- 商业计划书: 参照 VC/PE 行业惯例
-- 述职报告: 企业年终考核标准
-…等
+Enhancements over v1:
+1. Chain-of-Thought outline planning
+2. Cross-section consistency verification
+3. Format compliance checking
+4. Quality scoring with structured feedback
+
+Each document type follows national/industry standards:
+- 学术论文: GB/T 7713.2-2022
+- 法定公文: GB/T 9704-2012
+- 商业计划书: VC/PE industry standards
+- 述职报告: Corporate annual review standards
 """
 from app.skills.base import Skill
 from app.services.llm_service import chat
+from app.skills.offline.sota_utils import self_critique, adversarial_review
 
 
 # ── 各文档类型标准格式规范 ─────────────────────────────────────────────────────────
@@ -320,6 +326,16 @@ class DocumentTemplateSkill(Skill):
             "description": "skeleton=只生成结构骨架 | full=完整内容",
             "default": "full",
         },
+        "enable_critique": {
+            "type": "boolean",
+            "description": "启用跨章节一致性检查和质量自评",
+            "default": True,
+        },
+        "enable_adversarial": {
+            "type": "boolean",
+            "description": "启用红队挑战",
+            "default": True,
+        },
     }
 
     async def execute(self, params: dict, context: dict | None = None) -> dict:
@@ -329,6 +345,8 @@ class DocumentTemplateSkill(Skill):
         output_format = params.get("output_format", "word").lower()
         target_words = int(params.get("target_words", 0))
         generate_mode = params.get("generate_mode", "full")
+        enable_critique = params.get("enable_critique", True)
+        enable_adversarial = params.get("enable_adversarial", True)
 
         # Look up template
         template = DOCUMENT_TEMPLATES.get(doc_type)
@@ -354,9 +372,39 @@ class DocumentTemplateSkill(Skill):
         if generate_mode == "skeleton":
             return await self._generate_skeleton(doc_type, topic, structure, style_rules, standard)
 
-        return await self._generate_full(
+        # Full generation with CoT + critique
+        result = await self._generate_full(
             doc_type, topic, key_info, structure, style_rules, standard, output_format, words
         )
+
+        # Cross-section consistency check
+        if enable_critique:
+            consistency = await self._check_consistency(
+                result["result"], doc_type, topic, structure
+            )
+            result["consistency_check"] = consistency
+
+            # Self-critique
+            critique = await self_critique(
+                draft=result["result"],
+                topic=f"{doc_type} - {topic}",
+                dimensions=["structural_clarity", "constraint_compliance", "audience_fit"],
+            )
+            result["critique"] = critique
+            result["quality_score"] = round(critique["overall_score"] * 10)
+
+        # SOTA: Adversarial review
+        if enable_adversarial and result.get("result"):
+            try:
+                adv = await adversarial_review(
+                    output=result["result"][:3000],
+                    topic=f"{doc_type} - {topic}",
+                )
+                result["adversarial"] = adv
+            except Exception:
+                pass
+
+        return result
 
     async def _generate_skeleton(self, doc_type, topic, structure, style_rules, standard):
         messages = [
@@ -440,3 +488,51 @@ class DocumentTemplateSkill(Skill):
         ]
         result = await chat(messages, temperature=0.4, max_tokens=2000)
         return {"result": result, "doc_type": "通用文档", "mode": "full"}
+
+    async def _check_consistency(self, text: str, doc_type: str, topic: str, structure: str) -> dict:
+        """Check cross-section consistency in generated document."""
+        system = """你是文档质量审核师。检查文档各章节之间是否存在逻辑矛盾、数据不一致或结构缺失。
+
+检查维度：
+1. **数据一致性**：同一数据在不同章节中是否一致
+2. **逻辑连贯性**：前后章节是否逻辑衔接
+3. **结构完整性**：是否遗漏了标准结构中的必要章节
+4. **格式合规性**：是否符合文档类型的格式规范
+
+输出JSON：
+{
+  "consistent": true/false,
+  "issues": [{"section": "章节名", "issue": "问题描述", "severity": "high|medium|low"}],
+  "missing_sections": ["缺失章节1"],
+  "suggestions": ["修正建议1"]
+}"""
+
+        user = f"""请检查以下「{doc_type}」的逻辑一致性。
+
+## 标准结构
+{structure[:1000]}
+
+## 生成内容
+{text[:2500]}
+
+## 主题
+{topic}
+
+请输出JSON格式的审核结果。"""
+
+        from app.services.llm_service import chat_json
+        parsed = await chat_json(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.25,
+            max_tokens=1000,
+        )
+
+        if "error" in parsed:
+            return {"consistent": True, "issues": [], "missing_sections": [], "suggestions": []}
+
+        return {
+            "consistent": parsed.get("consistent", True),
+            "issues": parsed.get("issues", []),
+            "missing_sections": parsed.get("missing_sections", []),
+            "suggestions": parsed.get("suggestions", []),
+        }

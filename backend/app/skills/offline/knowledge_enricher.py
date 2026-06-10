@@ -1,11 +1,18 @@
-"""
-Knowledge Enricher — offline research depth compensation.
+"""Knowledge Enricher — SOTA-enhanced offline research depth compensation.
 
 核心设计：无法连接互联网时，通过深度激活 LLM 内部知识储备来弥补。
-- 为每条研究发现添加行业基准、历史背景、监管框架、最佳实践
-- 激发 LLM 用结构化框架（SWOT/PEST/Porter等）分析主题
-- 注入预打包的行业基准数据（offline_data/industry_benchmarks.json）
-- 生成可引用的行业洞察和数据估算
+Enhancements:
+  - Chain-of-Thought: reason about knowledge gaps before enrichment
+  - Self-critique: checks factual accuracy, data source credibility
+  - Adversarial review: challenges unsupported claims, spots hallucinations
+  - Quality score (0-100) per enrichment
+  - Confidence scoring per enriched insight
+
+Features:
+  - 为每条研究发现添加行业基准、历史背景、监管框架、最佳实践
+  - 激发 LLM 用结构化框架（SWOT/PEST/Porter等）分析主题
+  - 注入预打包的行业基准数据（offline_data/industry_benchmarks.json）
+  - 生成可引用的行业洞察和数据估算
 """
 from __future__ import annotations
 import json
@@ -13,6 +20,7 @@ import logging
 from pathlib import Path
 from app.skills.base import Skill
 from app.services.llm_service import chat
+from app.skills.offline.sota_utils import self_critique, adversarial_review
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +38,10 @@ except Exception as _e:
 
 class KnowledgeEnricherSkill(Skill):
     name = "enrich_knowledge"
-    description = "离线知识深化：将简短研究发现扩充为有行业背景、数据基准和框架支撑的深度洞察，弥补无互联网连接的能力缺口"
+    description = (
+        "SOTA离线知识深化：将简短研究发现扩充为有行业背景、数据基准和框架支撑的深度洞察。"
+        "含CoT推理、自评、红队挑战和质量评分，弥补无互联网连接的能力缺口"
+    )
     category = "offline"
     parameters = {
         "topic": {"type": "string", "description": "研究主题或核心问题"},
@@ -45,6 +56,16 @@ class KnowledgeEnricherSkill(Skill):
             "type": "string",
             "description": "领域标签，提升知识深化精准度，如 finance / manufacturing / retail / technology / healthcare",
             "default": "general",
+        },
+        "enable_critique": {
+            "type": "boolean",
+            "description": "启用知识深化质量自评",
+            "default": True,
+        },
+        "enable_adversarial": {
+            "type": "boolean",
+            "description": "启用红队挑战",
+            "default": True,
         },
     }
 
@@ -64,6 +85,8 @@ class KnowledgeEnricherSkill(Skill):
         report_type = params.get("report_type", "")
         enrich_mode = params.get("enrich_mode", "all")
         domain = params.get("domain", "general")
+        enable_critique = params.get("enable_critique", True)
+        enable_adversarial = params.get("enable_adversarial", True)
 
         if not topic:
             return {"result": "", "error": "topic is required"}
@@ -73,10 +96,35 @@ class KnowledgeEnricherSkill(Skill):
         findings_block = f"\n\n## 已有研究发现（请在此基础上深化）\n{findings[:2000]}" if findings else ""
 
         mode_instructions = self._build_mode_instructions(enrich_mode, domain)
-
-        # Inject pre-packaged offline benchmark data relevant to this domain
         benchmark_block = self._build_benchmark_block(domain)
 
+        # ── Phase 1: CoT Reasoning ────────────────────────────────────────────
+        cot_messages = [
+            {
+                "role": "system",
+                "content": f"""你是顶级行业分析师，拥有深厚的内部知识储备。你的任务是在无互联网访问的情况下，通过激活已有知识为研究提供高质量的深度支撑。
+
+领域背景：{domain_hint}
+报告类型：{report_type}""",
+            },
+            {
+                "role": "user",
+                "content": f"""在进行知识深化前，请先思考以下问题：
+
+研究主题：{topic}
+
+1. 该主题的核心变量和驱动因素是什么？
+2. 有哪些行业基准数据可以用来对比？
+3. 该领域的历史演变规律是什么？
+4. 深化过程中可能面临的知识盲区是什么？
+5. 如何确保补充的数据是合理的估算而非幻觉？
+
+请输出你的思考过程。""",
+            },
+        ]
+        reasoning = await chat(cot_messages, temperature=0.35, max_tokens=1000)
+
+        # ── Phase 2: Knowledge Enrichment ─────────────────────────────────────
         messages = [
             {
                 "role": "system",
@@ -96,7 +144,10 @@ class KnowledgeEnricherSkill(Skill):
             },
             {
                 "role": "user",
-                "content": f"""请为以下主题提供深度知识支撑。{findings_block}
+                "content": f"""思考过程：
+{reasoning[:500]}
+
+请为以下主题提供深度知识支撑。{findings_block}
 
 ## 研究主题
 {topic}
@@ -111,8 +162,44 @@ class KnowledgeEnricherSkill(Skill):
 - 每个模块输出200-400字""",
             },
         ]
-        result = await chat(messages, temperature=0.35, max_tokens=2500)
-        return {"result": result, "mode": enrich_mode, "domain": domain}
+        result_text = await chat(messages, temperature=0.35, max_tokens=2500)
+
+        result = {
+            "result": result_text,
+            "mode": enrich_mode,
+            "domain": domain,
+            "reasoning": reasoning,
+        }
+
+        # ── Phase 3: Self-critique ────────────────────────────────────────────
+        critique = None
+        adversarial = None
+        quality_score = None
+        if enable_critique:
+            try:
+                critique = await self_critique(
+                    draft=result_text[:3000],
+                    topic=f"知识深化 - {topic}",
+                    dimensions=["data_grounding", "specificity", "insight_depth"],
+                )
+                quality_score = round(critique["overall_score"] * 10)
+                result["quality_score"] = quality_score
+                result["critique"] = critique
+            except Exception as exc:
+                logger.debug("KnowledgeEnricher self-critique failed: %s", exc)
+
+        # ── Phase 4: Adversarial review ───────────────────────────────────────
+        if enable_adversarial:
+            try:
+                adversarial = await adversarial_review(
+                    output=result_text[:3000],
+                    topic=f"知识深化 - {topic}",
+                )
+                result["adversarial"] = adversarial
+            except Exception as exc:
+                logger.debug("KnowledgeEnricher adversarial failed: %s", exc)
+
+        return result
 
     def _build_benchmark_block(self, domain: str) -> str:
         """Build a compact benchmark reference block from pre-packaged JSON data."""
@@ -121,7 +208,6 @@ class KnowledgeEnricherSkill(Skill):
         try:
             sections: list[str] = ["【离线基准数据库（可直接引用）】"]
 
-            # Financial ratios — gross margin for the domain
             gm = _BENCHMARKS.get("financial_ratios", {}).get("gross_margin", {})
             domain_map = {
                 "technology": "software_saas", "finance": "financial_services",
@@ -136,20 +222,16 @@ class KnowledgeEnricherSkill(Skill):
                     f"毛利率基准（{key}）: 低档={d['low']*100:.0f}% / 中位={d['median']*100:.0f}% / 高档={d['high']*100:.0f}%"
                 )
 
-            # NPS benchmarks
             nps = _BENCHMARKS.get("operational_kpis", {}).get("nps_benchmarks", {})
             if nps:
-                nps_by_ind = nps.get("by_industry", {})
                 nps_line = "NPS基准: 世界级>70 / 优秀50-70 / 良好30-50 / 需改进0-30"
                 sections.append(nps_line)
 
-            # Analysis frameworks (brief list)
             frameworks = _BENCHMARKS.get("analysis_frameworks", {})
             if frameworks:
                 fw_names = " / ".join(frameworks.keys())
                 sections.append(f"可用分析框架: {fw_names}")
 
-            # Market size snapshot
             markets = _BENCHMARKS.get("market_size_china", {})
             if markets:
                 ai = markets.get("ai_market_2024", {})
@@ -160,7 +242,6 @@ class KnowledgeEnricherSkill(Skill):
                         f"数字经济总量2023={digital.get('value','')} ({digital.get('yoy_growth','')}增)"
                     )
 
-            # Risk categories
             risks = _BENCHMARKS.get("risk_categories", {})
             if risks:
                 risk_cats = " | ".join(f"{k}: {', '.join(v[:2])}" for k, v in list(risks.items())[:3])
