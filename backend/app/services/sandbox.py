@@ -168,6 +168,20 @@ async def execute_python(
                     import matplotlib.patches as mpatches
                     import matplotlib.ticker as mticker
                     from matplotlib.gridspec import GridSpec
+                    # Configure CJK fonts to prevent tofu boxes in Chinese text
+                    try:
+                        from matplotlib import rcParams
+                        _CJK_FONTS = [
+                            "Noto Sans CJK SC", "Noto Sans CJK", "Source Han Sans SC",
+                            "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+                            "SimHei", "WenQuanYi Micro Hei", "Arial Unicode MS",
+                            "DejaVu Sans", "Arial", "sans-serif",
+                        ]
+                        rcParams["font.family"] = "sans-serif"
+                        rcParams["font.sans-serif"] = _CJK_FONTS
+                        rcParams["axes.unicode_minus"] = False
+                    except Exception:
+                        pass
                     plt.close("all")
                     exec_globals["plt"] = plt
                     exec_globals["mpatches"] = mpatches
@@ -405,7 +419,7 @@ async def execute_python(
                     for fig_num in plt.get_fignums():
                         fig = plt.figure(fig_num)
                         buf = io.BytesIO()
-                        fig.savefig(buf, format="png", dpi=150, bbox_inches="tight",
+                        fig.savefig(buf, format="png", dpi=200, bbox_inches="tight",
                                     facecolor=fig.get_facecolor())
                         buf.seek(0)
                         png_bytes = buf.read()

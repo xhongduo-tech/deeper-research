@@ -102,8 +102,9 @@ FAMILY_GUIDES: dict[str, str] = {
         专用图表指南：
         - wordcloud:
             text = ' '.join(df['文本列'].astype(str))
+            from matplotlib.colors import ListedColormap
             wc = WordCloud(width=1200, height=600, background_color='white',
-                           colormap='viridis', max_words=200).generate(text)
+                           colormap=ListedColormap({palette_str[:6]}), max_words=200).generate(text)
             plt.figure(figsize=(14,7)); plt.imshow(wc, interpolation='bilinear')
             plt.axis('off'); plt.title('词云图', fontsize=16)
         - network:
@@ -305,8 +306,8 @@ class PythonChartEngine:
 1. 数据已注入为 `df`（pandas DataFrame），直接使用
 2. 如使用 matplotlib，不要调用 plt.show() 或 plt.savefig()，用 plt.tight_layout() 结尾
 3. 如使用 plotly，将 fig 存入 `_plotly_fig = fig`
-4. figsize 至少 (11, 7)，dpi 不需要设置（沙箱自动 150dpi）
-5. 中文标题、标签直接写，字体已预配置
+4. figsize 至少 (12, 8)，dpi 不需要设置（沙箱已自动配置为 200dpi）
+5. 中文标题、标签直接写，matplotlib 中文字体已由沙箱自动配置（rcParams["font.sans-serif"]），无需额外设置
 6. 只输出 Python 代码，不加任何解释、注释或代码块标记
 7. 代码必须可直接运行（不依赖外部文件）
 

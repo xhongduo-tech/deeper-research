@@ -492,6 +492,10 @@ chart_series = []
 
 # Generate overview chart
 if numeric_cols:
+    from matplotlib import rcParams
+    rcParams['font.family'] = 'sans-serif'
+    rcParams['font.sans-serif'] = ['Noto Sans CJK SC','PingFang SC','Microsoft YaHei','SimHei','Arial','sans-serif']
+    rcParams['axes.unicode_minus'] = False
     fig, ax = plt.subplots(figsize=(10, 6))
     means = df[numeric_cols[:6]].mean()
     ax.bar(means.index, means.values,

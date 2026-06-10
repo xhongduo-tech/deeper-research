@@ -2428,7 +2428,7 @@ def _render_with_plotly(spec: ChartSpec, *, width: int, height: int) -> bytes:
             fig.add_trace(go.Treemap(
                 labels=labels_flat, parents=parents_flat, values=values_flat,
                 texttemplate="<b>%{label}</b><br>%{value}",
-                marker={"colorscale": "Blues"},
+                marker={"colors": palette[:len(labels_flat)]},
             ))
         else:
             fig.add_trace(go.Treemap(
@@ -2436,6 +2436,37 @@ def _render_with_plotly(spec: ChartSpec, *, width: int, height: int) -> bytes:
                 values=spec.primary_values,
                 texttemplate="<b>%{label}</b><br>%{value}" + (f" {spec.unit}" if spec.unit else ""),
                 marker={"colors": palette[:len(spec.labels)]},
+            ))
+        fig.update_layout(margin={"l": 10, "r": 10, "t": 80, "b": 10})
+
+    # ── Sunburst ──
+    elif spec.chart_type == "sunburst":
+        tree_data = spec.extra.get("tree")
+        if tree_data:
+            labels_flat, parents_flat, values_flat = [], [], []
+            def _flatten_sunburst(nodes, parent=""):
+                for node in nodes:
+                    labels_flat.append(node["name"])
+                    parents_flat.append(parent)
+                    values_flat.append(node.get("value", 0))
+                    if node.get("children"):
+                        _flatten_sunburst(node["children"], node["name"])
+            _flatten_sunburst(tree_data)
+            fig.add_trace(go.Sunburst(
+                labels=labels_flat, parents=parents_flat, values=values_flat,
+                branchvalues="total",
+                textinfo="label+percent entry",
+                marker={"colors": palette[:len(labels_flat)],
+                        "line": {"color": "#fff", "width": 2}},
+                hovertemplate="<b>%{label}</b><br>数值: %{value}<extra></extra>",
+            ))
+        else:
+            fig.add_trace(go.Sunburst(
+                labels=spec.labels, parents=[""] * len(spec.labels),
+                values=spec.primary_values,
+                textinfo="label+percent entry",
+                marker={"colors": palette[:len(spec.labels)],
+                        "line": {"color": "#fff", "width": 2}},
             ))
         fig.update_layout(margin={"l": 10, "r": 10, "t": 80, "b": 10})
 
@@ -2616,8 +2647,9 @@ def _render_with_matplotlib(spec: ChartSpec, *, width: int, height: int) -> byte
     import numpy as np
 
     palette = spec.effective_palette()
-    fig_w, fig_h = width / 150, height / 150
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=150)
+    # Unified DPI with Plotly scale=2 (1400*2=2800px, 820*2=1640px)
+    fig_w, fig_h = width / 300, height / 300
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=300)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("#FAFAFA")
 
@@ -2829,6 +2861,35 @@ def _render_with_matplotlib(spec: ChartSpec, *, width: int, height: int) -> byte
             ax.set_yticks(range(len(spec.labels)))
             ax.set_yticklabels(spec.labels, fontsize=10)
 
+    # ── Sunburst (Matplotlib — nested pie approximation) ──
+    elif ct == "sunburst":
+        tree_data = spec.extra.get("tree")
+        if tree_data:
+            inner_labels, inner_values, inner_colors = [], [], []
+            outer_labels, outer_values, outer_colors = [], [], []
+            for i, node in enumerate(tree_data[:6]):
+                inner_labels.append(node["name"])
+                inner_values.append(node.get("value", 0))
+                inner_colors.append(palette[i % len(palette)])
+                for j, child in enumerate(node.get("children", [])[:4]):
+                    outer_labels.append(child["name"])
+                    outer_values.append(child.get("value", 0))
+                    outer_colors.append(palette[i % len(palette)])
+            if inner_values:
+                ax.pie(inner_values, labels=inner_labels, colors=inner_colors,
+                       radius=0.6, labeldistance=0.5, textprops={"fontsize": 9, "color": "white"},
+                       wedgeprops={"edgecolor": "white", "linewidth": 2})
+            if outer_values:
+                ax.pie(outer_values, labels=outer_labels, colors=outer_colors,
+                       radius=1.0, labeldistance=1.08, textprops={"fontsize": 8},
+                       wedgeprops={"edgecolor": "white", "linewidth": 2})
+            ax.set_title(spec.title, fontsize=14, fontweight="bold", pad=20)
+        else:
+            ax.pie(spec.primary_values, labels=spec.labels, colors=palette[:len(spec.labels)],
+                   radius=0.8, autopct="%1.1f%%", textprops={"fontsize": 10},
+                   wedgeprops={"edgecolor": "white", "linewidth": 2})
+            ax.set_title(spec.title, fontsize=14, fontweight="bold", pad=20)
+
     # ── Sankey (Matplotlib) ──
     elif ct == "sankey":
         from matplotlib.sankey import Sankey as _Sankey
@@ -2910,7 +2971,7 @@ def _render_with_matplotlib(spec: ChartSpec, *, width: int, height: int) -> byte
     plt.tight_layout(pad=1.0)
 
     buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor="white", edgecolor="none")
+    plt.savefig(buf, format="png", dpi=300, bbox_inches="tight", facecolor="white", edgecolor="none")
     plt.close(fig)
     buf.seek(0)
     return _apply_pil_polish(buf.read())
